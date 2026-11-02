@@ -379,6 +379,8 @@ export interface Dag {
   summary: string;
   nodes: DagNode[];
   createdAt: string;
+  /** 命中的业务模板：模型只识别意图与槽位，执行路径由模板决定 */
+  template?: { id: string; label: string; steps: string[] };
 }
 
 export interface PolicyReason {

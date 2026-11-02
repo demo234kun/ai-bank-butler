@@ -1,6 +1,7 @@
 export * from './types';
 export * from './risk';
 export * from './riskTiers';
+export * from './templates';
 export * from './riskAssessment';
 export * from './dispute';
 export * from './brand';

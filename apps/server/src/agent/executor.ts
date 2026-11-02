@@ -454,15 +454,31 @@ export async function executeDag(session: SessionInternal, emit: EmitFn): Promis
 
     try {
       const handler = toolHandler(node.tool);
-      const result = await handler({
-        state: live,
-        userId: session.userId,
-        idempotencyKey: idemKey,
-        sessionId: session.id,
-        runId,
-        node,
-        resultOf: (nodeId: string) => dag.nodes.find((n) => n.id === nodeId)?.result,
-      });
+      const runHandler = () =>
+        handler({
+          state: live,
+          userId: session.userId,
+          idempotencyKey: idemKey,
+          sessionId: session.id,
+          runId,
+          node,
+          resultOf: (nodeId: string) => dag.nodes.find((n) => n.id === nodeId)?.result,
+        });
+      let result = await runHandler();
+      // 模板声明了重试次数：只重试上游瞬时故障，业务拒绝不重试
+      const retryable = (r: typeof result) =>
+        !r.ok && /BANK_UNAVAILABLE|TIMEOUT|_FAILED$|RATE_LIMITED/.test(r.error?.code ?? '');
+      for (let attempt = 0; !result.ok && retryable(result) && attempt < 2; attempt += 1) {
+        node.attempts += 1;
+        audit.append(
+          'TOOL_RETRY',
+          `${node.label} 第 ${node.attempts} 次重试（${result.error?.code ?? '未知错误'}）`,
+          { nodeId: node.id, tool: node.tool, code: result.error?.code },
+          { sessionId: session.id, runId },
+        );
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        result = await runHandler();
+      }
       node.result = result;
       node.status = result.ok ? 'SUCCESS' : 'FAILED';
       node.finishedAt = clock.nowIso();

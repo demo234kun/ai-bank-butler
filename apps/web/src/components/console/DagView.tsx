@@ -152,6 +152,12 @@ export function DagView({ agent }: { agent: BankAgentApi }) {
             <div className="min-w-0">
               <div className="truncate text-[12px] font-medium text-[#e9e2d3]">{dag.title}</div>
               <div className="mt-1 line-clamp-1 text-[9.5px] text-[#7f9087]">{dag.summary}</div>
+              {dag.template ? (
+                <div className="mt-1 text-[9px] text-[#7f9087]">
+                  业务模板 <span className="text-[#c7a667]">{dag.template.label}</span>
+                  <span className="ml-1 text-[#5c6b63]">({dag.template.id})</span>
+                </div>
+              ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               {(['GREEN', 'YELLOW', 'RED'] as Risk[]).map((risk) => (

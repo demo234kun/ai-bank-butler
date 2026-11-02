@@ -76,11 +76,8 @@ export async function understand(input: UnderstandInput): Promise<NluResult> {
     lastPayee: input.context.lastPayee,
     lastAmountCents: input.context.lastAmountCents,
   });
+  // 每条消息都必须调用模型做语义理解；缓存只在模型失败时兜底
   const cached = cacheGet(key);
-  if (cached) {
-    metrics.recordCacheHit();
-    return mergeWithRules(cached, rule);
-  }
 
   if (!consumeLlmBudget()) {
     return { ...rule, source: 'rules', rationale: '今日 LLM 演示配额已用完，规则引擎接管' };
@@ -125,5 +122,9 @@ export async function understand(input: UnderstandInput): Promise<NluResult> {
     }
   }
 
+  if (cached) {
+    metrics.recordCacheHit();
+    return { ...mergeWithRules(cached, rule), rationale: `${cached.rationale ?? ''}（模型暂时不可用，使用缓存解析）`.trim() };
+  }
   return { ...rule, source: config.llm.offline ? 'offline' : 'rules' };
 }

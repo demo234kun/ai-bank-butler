@@ -1,4 +1,6 @@
 import {
+  BUSINESS_TEMPLATES,
+  selectTemplate,
   formatMoney,
   type Card,
   type ClarifyOption,
@@ -681,6 +683,20 @@ function planAccount(state: BankState, nlu: NluResult, runId: string): PlanOutco
 }
 
 export function buildPlan(
+  state: BankState,
+  nlu: NluResult,
+  context: ContextStack,
+  runId: string,
+): PlanOutcome {
+  const outcome = dispatchPlan(state, nlu, context, runId);
+  if (outcome.kind === 'plan') {
+    const template = BUSINESS_TEMPLATES[selectTemplate(nlu.intent, nlu.slots, nlu.utterance ?? '')];
+    outcome.dag.template = { id: template.id, label: template.label, steps: template.steps };
+  }
+  return outcome;
+}
+
+function dispatchPlan(
   state: BankState,
   nlu: NluResult,
   context: ContextStack,

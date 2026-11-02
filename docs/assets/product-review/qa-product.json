@@ -1,0 +1,173 @@
+{
+  "at": "2026-11-02T07:12:46.113Z",
+  "port": 8795,
+  "checks": 33,
+  "failures": 0,
+  "results": [
+    {
+      "name": "注册页可访问",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "注册页移除风险等级手选项",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "注册页含密码与确认密码",
+      "ok": true,
+      "detail": "password inputs=2"
+    },
+    {
+      "name": "演示通道下发一次性随机码并自动填入",
+      "ok": true,
+      "detail": "code=593082"
+    },
+    {
+      "name": "注册成功后进入 App",
+      "ok": true,
+      "detail": "path=/app"
+    },
+    {
+      "name": "我的页可访问",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "我的页显示未测评提示",
+      "ok": true,
+      "detail": "风险测评保守型 · 0 分 · 最高可购 R1 · 测评已过期"
+    },
+    {
+      "name": "风险测评弹层打开",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "测评标题存在",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "测评结果页展示等级与分数",
+      "ok": true,
+      "detail": "测评结果 | 稳健型 | 49 分 | 可承受小幅波动，适合 R1–R2 固收类产品 | 可适当性购买 | R1 – R2 | 测评时间 | 2026-10-30 10:00 | 测评结果已写入审计链"
+    },
+    {
+      "name": "我的页回显新测评结果",
+      "ok": true,
+      "detail": "风险测评稳健型 · 49 分 · 最高可购 R2"
+    },
+    {
+      "name": "编辑资料保留且无风险等级选项",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "账单页可访问",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "交易行可点击",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "交易详情弹层打开",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "详情显示交易明细字段",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "详情显示金额",
+      "ok": true,
+      "detail": "+¥32,000.00"
+    },
+    {
+      "name": "争议提交按钮存在",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "工单号回显",
+      "ok": true,
+      "detail": "争议工单 DR202610307951"
+    },
+    {
+      "name": "账单页展示申诉工单区块",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "麦克风按钮标注真实识别通道",
+      "ok": true,
+      "detail": "语音输入（浏览器识别）"
+    },
+    {
+      "name": "页面无“演示模拟”假聆听文案",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "点击语音后给出真实状态或错误",
+      "ok": true,
+      "detail": "麦克风权限 · 麦克风权限被拒绝，请在浏览器设置里允许后重试\n语音由 浏览器语音识别 转写 · 资金操作仍需按风"
+    },
+    {
+      "name": "首页有提醒入口",
+      "ok": true,
+      "detail": "计划与提醒"
+    },
+    {
+      "name": "提醒中心展示待执行计划",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "我的页提供生物识别录入",
+      "ok": true,
+      "detail": "本机生物识别（指纹 / 面容）开启后强验证可直接用指纹 / 面容确认"
+    },
+    {
+      "name": "控制台展示计划任务与调度面板",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "找回密码页可访问",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "控制台可进入",
+      "ok": true,
+      "detail": "path=/console"
+    },
+    {
+      "name": "控制台 1024 无横向溢出",
+      "ok": true,
+      "detail": "overflow=0px"
+    },
+    {
+      "name": "控制台 375 无横向溢出",
+      "ok": true,
+      "detail": "overflow=0px"
+    },
+    {
+      "name": "首页 375 无横向溢出",
+      "ok": true,
+      "detail": "overflow=0px"
+    },
+    {
+      "name": "最小字号已抬到 8.5px 以上",
+      "ok": true,
+      "detail": "smallest=8.5/9/9.5"
+    }
+  ]
+}

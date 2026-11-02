@@ -1,0 +1,23 @@
+{
+  "id": "/",
+  "name": "AI 银行管家",
+  "short_name": "AI 银行管家",
+  "description": "说话就能办业务的银行 AI 智能体：权限分级、强验证、全链路审计。演示环境使用合成数据。",
+  "lang": "zh-CN",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F4F1EC",
+  "theme_color": "#0F3D33",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "和 AI 管家对话", "short_name": "AI 管家", "url": "/app/chat", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "查看账单", "short_name": "账单", "url": "/app/activity", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

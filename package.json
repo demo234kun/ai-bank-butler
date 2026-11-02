@@ -1,0 +1,44 @@
+{
+  "name": "banking-agent-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "AI Banking Agent prototype — dual-screen demo with permission tiers, audited DAG agent runtime",
+  "overrides": {
+    "vite": "5.4.21"
+  },
+  "workspaces": [
+    "apps/server",
+    "apps/web",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev -w @bank/server",
+    "dev:web": "npm run dev -w @bank/web",
+    "build": "node scripts/build-product.mjs",
+    "start": "npm run start -w @bank/server",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "tsx scripts/smoke.ts",
+    "smoke:bank": "tsx scripts/smoke.ts --banking=http --stub-port=8793",
+    "smoke:full": "tsx scripts/smoke.ts --banking=http --verify=http --stub-port=8794",
+    "bank:stub": "tsx scripts/bank-core-stub.ts",
+    "e2e": "tsx scripts/e2e-demo.ts",
+    "reset": "tsx scripts/reset.ts",
+    "build:demo": "npm run build -w @bank/web",
+    "build:product": "node scripts/build-product.mjs",
+    "qa:pure": "node tools/qa-pure-product.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.3"
+  }
+}

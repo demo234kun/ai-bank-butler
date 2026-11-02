@@ -1,0 +1,477 @@
+openapi: 3.0.3
+info:
+  title: AI 银行管家 · 银行核心接入契约
+  version: 1.0.0
+  description: |
+    本契约定义 AI 银行管家服务端与签约银行核心网关之间的最小接口。
+    所有 /v1/* 请求（/v1/health 除外）使用应用级 HMAC-SHA256 签名，
+    请求头：X-App-Id / X-Timestamp / X-Nonce / X-Signature；写操作必须带 Idempotency-Key。
+
+    canonical =
+      METHOD + "\n" + pathWithQuery + "\n" + timestamp + "\n" + nonce + "\n" + sha256(rawBody)
+
+    X-Signature = hex(HMAC-SHA256(appSecret, canonical))。允许 5 分钟时钟偏移，nonce 不可复用。
+
+    金额一律为整数分（amountCents / balanceCents）。响应封装：
+    { "ok": true, "data": ... } 或 { "ok": false, "error": { "code", "message" } }。
+servers:
+  - url: https://bank-core-gateway.example.com
+    description: 行方或行方中间件网关
+tags:
+  - name: core
+  - name: verification
+security:
+  - SignedRequest: []
+paths:
+  /v1/health:
+    get:
+      tags: [core]
+      security: []
+      summary: 健康检查
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      service: { type: string }
+                      now: { type: string, format: date-time }
+
+  /v1/snapshot:
+    get:
+      tags: [core]
+      summary: 拉取客户银行数据快照
+      parameters:
+        - in: query
+          name: externalRef
+          required: true
+          schema: { type: string, pattern: '^bref_[a-f0-9]{24}$' }
+        - in: query
+          name: txnLimit
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 600 }
+      responses:
+        '200':
+          description: 快照
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/BankSnapshot' }
+  /v1/ops:
+    post:
+      tags: [core]
+      summary: 执行银行操作（统一操作门面）
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OpRequest' }
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OpResponse' }
+        '401':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/BusinessError'
+        '429':
+          $ref: '#/components/responses/Error'
+        '500':
+          $ref: '#/components/responses/Error'
+
+  /v1/otp/send:
+    post:
+      tags: [verification]
+      summary: 发送短信验证码
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [externalRef, phone, scene, reference, expiresInSec]
+              properties:
+                externalRef: { type: string, pattern: '^bref_[a-f0-9]{24}$' }
+                phone: { type: string, example: '13800006677' }
+                scene: { type: string, enum: [stepup, register, login, reset] }
+                reference: { type: string, example: chal_ab12cd34 }
+                expiresInSec: { type: integer, minimum: 60, maximum: 600 }
+      responses:
+        '200':
+          description: 已发送
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [requestId]
+                    properties:
+                      requestId: { type: string }
+  /v1/otp/verify:
+    post:
+      tags: [verification]
+      summary: 校验短信验证码
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, reference, code]
+              properties:
+                requestId: { type: string }
+                reference: { type: string }
+                code: { type: string, pattern: '^\d{6}$' }
+      responses:
+        '200':
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [ok]
+                    properties:
+                      ok: { type: boolean }
+                      attemptsLeft: { type: integer, minimum: 0, maximum: 5 }
+                      reason: { type: string, example: OTP_INVALID }
+
+  /v1/face/sessions:
+    post:
+      tags: [verification]
+      summary: 创建人脸活体会话
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [externalRef, reference]
+              properties:
+                externalRef: { type: string, pattern: '^bref_[a-f0-9]{24}$' }
+                reference: { type: string }
+                returnUrl: { type: string, format: uri }
+      responses:
+        '200':
+          description: 会话已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [sessionId, expiresAt]
+                    properties:
+                      sessionId: { type: string }
+                      verifyUrl: { type: string, format: uri }
+                      expiresAt: { type: string, format: date-time }
+  /v1/face/sessions/{id}:
+    get:
+      tags: [verification]
+      summary: 查询人脸核验结果
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 核验状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  data:
+                    type: object
+                    required: [status]
+                    properties:
+                      status: { type: string, enum: [pending, passed, failed, expired] }
+                      score: { type: number, minimum: 0, maximum: 1 }
+
+components:
+  securitySchemes:
+    SignedRequest:
+      type: apiKey
+      in: header
+      name: X-App-Id
+      description: |
+        还需同时提供 X-Timestamp、X-Nonce、X-Signature；
+        签名算法见文档顶部与 docs/banking-integration.md。
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 128 }
+      description: 写操作幂等键；网络重试必须复用同一个值。
+  responses:
+    Error:
+      description: 统一错误
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    BusinessError:
+      description: 业务失败（不重试）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [ok, error]
+      properties:
+        ok: { type: boolean, example: false }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: INSUFFICIENT_BALANCE }
+            message: { type: string, example: 账户可用余额不足 }
+    BankSnapshot:
+      type: object
+      properties:
+        accounts: { type: array, items: { $ref: '#/components/schemas/Account' } }
+        cards: { type: array, items: { $ref: '#/components/schemas/BankCard' } }
+        transactions: { type: array, items: { $ref: '#/components/schemas/Txn' } }
+        subscriptions: { type: array, items: { $ref: '#/components/schemas/Subscription' } }
+        products: { type: array, items: { $ref: '#/components/schemas/WealthProduct' } }
+        holdings: { type: array, items: { $ref: '#/components/schemas/Holding' } }
+        fundLocks: { type: array, items: { $ref: '#/components/schemas/FundLock' } }
+        giftOrders: { type: array, items: { $ref: '#/components/schemas/GiftOrder' } }
+        schedules: { type: array, items: { $ref: '#/components/schemas/ScheduleItem' } }
+        disputes: { type: array, items: { $ref: '#/components/schemas/Dispute' } }
+    Dispute:
+      type: object
+      required: [id, reference, txnId, accountId, merchant, amountCents, currency, reason, status, createdAt, updatedAt, expectedFinishAt, channel]
+      properties:
+        id: { type: string }
+        reference: { type: string, description: 展示给用户的工单号 }
+        txnId: { type: string }
+        accountId: { type: string }
+        merchant: { type: string }
+        amountCents: { type: integer }
+        currency: { type: string, enum: [CNY] }
+        reason: { type: string, enum: [duplicate, unauthorized, not_received, amount_wrong, other] }
+        status: { type: string, enum: [submitted, reviewing, resolved_credit, rejected] }
+        note: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        expectedFinishAt: { type: string, format: date-time }
+        channel: { type: string, enum: [agent, app] }
+        resolution: { type: string, description: 核查结论文案，仅 resolved_credit / rejected 时有意义 }
+    Account:
+      type: object
+      required: [id, name, bank, type, last4, balanceCents, lockedCents, primary, color]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        bank: { type: string }
+        type: { type: string, enum: [savings, current, credit] }
+        last4: { type: string, pattern: '^\d{4}$' }
+        balanceCents: { type: integer }
+        lockedCents: { type: integer, minimum: 0 }
+        availableCents: { type: integer, minimum: 0 }
+        primary: { type: boolean }
+        color: { type: string }
+    BankCard:
+      type: object
+      required: [id, type, network, last4, status, expiry, color, virtual]
+      properties:
+        id: { type: string }
+        accountId: { type: string }
+        type: { type: string, enum: [debit, credit, virtual] }
+        network: { type: string, enum: [银联, Visa] }
+        last4: { type: string, pattern: '^\d{4}$' }
+        status: { type: string, enum: [active, frozen, lost, cancelled] }
+        limitCents: { type: integer, minimum: 0 }
+        usedCents: { type: integer, minimum: 0 }
+        expiry: { type: string }
+        color: { type: string }
+        virtual: { type: boolean }
+    Txn:
+      type: object
+      required: [id, accountId, ts, amountCents, merchant, category, channel, status]
+      properties:
+        id: { type: string }
+        accountId: { type: string }
+        ts: { type: string, description: ISO 时间（含时区） }
+        amountCents: { type: integer, description: 负数为支出 }
+        merchant: { type: string }
+        category: { type: string }
+        channel: { type: string }
+        note: { type: string }
+        status: { type: string, enum: [posted, reversed] }
+        anomaly: { type: boolean }
+        anomalyReason: { type: string }
+        location: { type: string }
+    Subscription:
+      type: object
+      required: [id, merchant, amountCents, cycle, nextChargeAt, lastChargedAt, status, category, color]
+      properties:
+        id: { type: string }
+        merchant: { type: string }
+        amountCents: { type: integer, minimum: 0 }
+        previousAmountCents: { type: integer, minimum: 0 }
+        cycle: { type: string, enum: [monthly, yearly] }
+        nextChargeAt: { type: string }
+        lastChargedAt: { type: string }
+        status: { type: string, enum: [active, paused, cancelled] }
+        category: { type: string }
+        color: { type: string }
+    WealthProduct:
+      type: object
+      required: [id, name, issuer, type, riskLevel, yieldPct, minAmountCents, termDays, liquidity, tags, description, color]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        issuer: { type: string }
+        type: { type: string }
+        riskLevel: { type: string, enum: [R1, R2, R3, R4, R5] }
+        yieldPct: { type: number }
+        minAmountCents: { type: integer, minimum: 0 }
+        termDays: { type: integer, minimum: 0 }
+        liquidity: { type: string }
+        tags: { type: array, items: { type: string } }
+        description: { type: string }
+        color: { type: string }
+    Holding:
+      type: object
+      required: [id, productId, amountCents, purchasedAt, yieldPct, floatingPct, status]
+      properties:
+        id: { type: string }
+        productId: { type: string }
+        amountCents: { type: integer, minimum: 0 }
+        purchasedAt: { type: string }
+        yieldPct: { type: number }
+        floatingPct: { type: number }
+        status: { type: string, enum: [holding, redeemed] }
+    FundLock:
+      type: object
+      required: [id, accountId, amountCents, reason, createdAt, releaseAt, status]
+      properties:
+        id: { type: string }
+        accountId: { type: string }
+        amountCents: { type: integer, minimum: 0 }
+        reason: { type: string }
+        createdAt: { type: string }
+        releaseAt: { type: string }
+        status: { type: string, enum: [locked, released] }
+    GiftOrder:
+      type: object
+      required: [id, type, merchant, amountCents, deliveryAt, status, note]
+      properties:
+        id: { type: string }
+        type: { type: string, enum: [flower, cake] }
+        merchant: { type: string }
+        amountCents: { type: integer, minimum: 0 }
+        deliveryAt: { type: string }
+        status: { type: string, enum: [scheduled, delivered, cancelled] }
+        note: { type: string }
+    ScheduleItem:
+      type: object
+      required: [id, kind, title, executeAt, status]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [transfer, gift, note] }
+        title: { type: string }
+        amountCents: { type: integer, minimum: 0 }
+        executeAt: { type: string }
+        status: { type: string, enum: [scheduled, done, cancelled] }
+        detail: { type: string }
+    OpRequest:
+      type: object
+      required: [externalRef, op, payload]
+      properties:
+        externalRef: { type: string, pattern: '^bref_[a-f0-9]{24}$' }
+        op:
+          type: string
+          enum:
+            - transfer
+            - reverse_transfer
+            - purchase_wealth
+            - redeem_wealth
+            - apply_virtual_card
+            - cancel_virtual_card
+            - adjust_card_limit
+            - set_card_status
+            - cancel_subscription
+            - restore_subscription
+            - create_schedule
+            - cancel_schedule
+            - lock_funds
+            - unlock_funds
+            - order_gift
+            - cancel_gift
+            - create_split
+            - cancel_split
+            - open_dispute
+        payload:
+          type: object
+          description: 字段见 docs/banking-integration.md 第 6.1 节
+    OpResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean, example: true }
+        data:
+          allOf:
+            - type: object
+              description: 根据 op 返回的 ID / 金额字段；建议同时返回完整 snapshot
+              properties:
+                snapshot: { $ref: '#/components/schemas/BankSnapshot' }
+                txnIds: { type: array, items: { type: string } }
+                txnId: { type: string }
+                reversalTxnId: { type: string }
+                originalTxnIds: { type: array, items: { type: string } }
+                totalCents: { type: integer }
+                creditCents: { type: integer }
+                amountCents: { type: integer }
+                accountId: { type: string }
+                holdingId: { type: string }
+                cardId: { type: string }
+                last4: { type: string }
+                previousLimitCents: { type: integer }
+                previousStatus: { type: string }
+                subscriptionId: { type: string }
+                scheduleId: { type: string }
+                lockId: { type: string }
+                orderId: { type: string }
+                requestId: { type: string }
+                myShareCents: { type: integer }
+                shares:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name: { type: string }
+                      amountCents: { type: integer }
+                      status: { type: string }
+                createdAt: { type: string }

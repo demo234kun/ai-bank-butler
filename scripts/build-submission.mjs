@@ -174,14 +174,14 @@ function main() {
         return `| ${path.relative(TARGET, file).split(path.sep).join('/')} | ${human(size)} | \`${sha256(file)}\` |`;
       }),
     '',
-    '> 待补：演示视频录制、GitHub 仓库地址。',
+    '> 待补：演示视频录制。仓库地址 https://github.com/demo234kun/ai-bank-butler',
     '',
   ].join('\n');
   fs.writeFileSync(path.join(TARGET, '00-文件清单.md'), manifest, 'utf8');
 
   console.log(`\n已生成：${TARGET}`);
   console.log(`文件 ${all.length + 1} 个，总计 ${human(totalBytes)}`);
-  console.log('待补：演示视频录制、GitHub 仓库地址。');
+  console.log('待补：演示视频录制。仓库地址 https://github.com/demo234kun/ai-bank-butler');
 }
 
 main();

@@ -38,7 +38,7 @@
 | --- | --- | --- |
 | 源代码 | ✅ | 整个仓库（monorepo：`apps/server`、`apps/web`、`packages/shared`、`scripts`、`tools`）；打包时排除 `node_modules`、构建产物、运行数据与隧道二进制 |
 | README | ✅ | `README.md`（简介、产品形态、场景、安全设计、快速开始、脚本、架构、已知边界、目录） |
-| GitHub 仓库地址 | ⚠ | **仓库尚未初始化 git，也没有远端**。需 `git init` + 首次提交 + 建远端 + 填地址；`.gitignore` 已就绪 |
+| GitHub 仓库地址 | ✅ | https://github.com/demo234kun/ai-bank-butler （public，240 个文件；已排除 `node_modules`、`dist`、`data/` 运行数据、`.env`、隧道 exe） |
 | 部署说明 | ✅ | [deploy.md](deploy.md)（本地、Docker、公网 HTTPS、环境变量表、两种前端构建、验收清单） |
 | 测试用例 | ✅ | `apps/server/test/`（策略、NLU、规划、审计、账本、集成、风险测评、争议）+ `scripts/smoke.ts`、`scripts/smoke` 全量模式 + `tools/qa-product.mjs` 浏览器回归 |
 | 依赖与开源许可 | ✅ | [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md)，离线枚举 291 个第三方包及许可（MIT/ISC/Apache/BSD 等），自研 `@bank/*` 不计入；`node scripts/list-licenses.mjs` 可重新生成 |

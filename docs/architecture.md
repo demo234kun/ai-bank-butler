@@ -1,99 +1,162 @@
-# 系统架构与核心算法
+# AI 银行管家 · 技术文档
+
+> 版本 2.0 · 2026-11-02 · 对应仓库 `main`
+>
+> 本文说明系统架构、核心算法与安全设计，内容以当前仓库代码为准。演示数据、虚构银行名、核验通道性质与已知风险见 [security-self-assessment.md](security-self-assessment.md)；接口契约见 [api.md](api.md) 与 [banking-integration.md](banking-integration.md)。
+
+## 0. 摘要
+
+| 项 | 实现 |
+| --- | --- |
+| 产品形态 | 手机 PWA（首页 / 对话 / 账单 / 卡片 / 我的）+ `/console` 评委控制台 |
+| 服务端 | Node.js 24 · Fastify 5 · TypeScript · SSE |
+| 前端 | React 18 · Vite 5 · TypeScript · Tailwind · Service Worker |
+| 语义理解 | DeepSeek Chat（OpenAI 兼容协议），服务端持有 Key，每条业务消息都调用模型 |
+| 任务规划 | 18 个业务模板 + 固定 DAG + 拓扑执行器，模型不生成调用链 |
+| 工具层 | 29 个已注册工具，统一 `BankingGateway` 抽象 |
+| 权限模型 | T0 自动 / T1 摘要确认 / T2 收款人复述 / T3 多因子 / T4 人工审核 |
+| 风控智能体 | `risk-agent-v1`，14 类信号加权评分 0–100，只升档不降档 |
+| 审计 | 追加式哈希链，50 条一个 checkpoint，支持全链校验与篡改演练 |
+| 验证 | 123 个单元/集成测试（10 个文件）、端到端 smoke、浏览器回归、生产构建 |
+
+一次请求的主链路：
+
+```text
+用户语句
+  → 注入规则扫描
+  → LLM 意图与槽位（JSON Schema 约束）
+  → 业务模板选择
+  → DAG 规划（固定工具白名单）
+  → 逐节点策略判定（静态档 + 风控智能体）
+  → 自动执行 / 摘要确认 / 收款人复述 / 多因子 / 人工审核
+  → 工具执行（幂等、额度预留、失败重试）
+  → 事实渲染 + 数字守卫
+  → 审计入链
+```
 
 ## 1. 设计原则
 
-1. **模型只做理解，不碰执行**：LLM 输出受 zod 约束的意图与槽位；工具选择、金额校验、风险分级、授权签发全部在服务端确定性代码中完成。
-2. **事实只能来自工具**：所有面向用户的余额、流水、收益、回执由模板绑定工具结果渲染，LLM 不生成事实数字。
-3. **安全边界在服务端**：提示词注入、伪造身份、改单、重放都不能绕过工具白名单、`PolicyGrant` 与额度台账。
-4. **每一步可解释、可审计、可回放**：意图、规划、策略、确认、验证、工具结果、补偿、熔断均写入追加式哈希链。
-5. **演示稳定优先**：LLM 三级兜底（在线 → 缓存 → 规则），可注入时钟与一键重置，断网仍可完整演示。
-6. **产品化隔离**：账号、银行状态、会话、额度、审计、熔断均按用户隔离；PWA 与评委控制台共享账号数据、使用独立会话。
-7. **可接入而非写死**：工具只依赖 `BankingGateway`；默认本地仿真，配置 `BANKING_MODE=http` 后所有账户读写经签名网关访问银行核心，失败显式上抛，不回退仿真。短信与人脸同样有 `demo / http` 两种 Provider。
+1. **模型负责理解，模板负责执行。** LLM 只输出意图、槽位与置信度；选模板、建 DAG、算风险、签授权全部由服务端确定性代码完成。
+2. **每条业务消息都调用模型。** 缓存只在模型调用失败时兜底，避免“命中缓存就跳过模型”导致语义漂移。
+3. **事实只能来自工具。** 余额、流水、收益、回执、交易号均由工具结果渲染；模型不生成面向用户的数字。
+4. **安全边界在服务端，档位只升不降。** 提示词注入、伪造身份、改单、重放都无法改变静态档与风控档的取高结果。
+5. **每一步可解释、可审计、可回放。** 意图、模板、规划、策略、确认、复述、验证、工具结果、补偿、熔断全部写入哈希链。
+6. **渠道与银行核心可替换。** `/api/chat`、确认、强验证与审计接口与展示层解耦；银行读写统一经 `BankingGateway`，默认本地仿真，可切签名 HTTP 核心。
+7. **演示稳定优先。** 支持注入演示时钟、一键重置、LLM 离线开关、规则兜底与全局日预算；断网时仍可完整演示。
 
 ## 2. 总体架构
+
+### 2.1 分层与职责
+
+| 层 | 目录 | 职责 |
+| --- | --- | --- |
+| 客户端 | `apps/web/src` | 产品 PWA、对话与富卡片、确认单、强验证、控制台（DAG / 策略 / 审计 / 攻防 / 指标） |
+| 接口层 | `apps/server/src/routes` | 认证、会话、聊天 SSE、确认/验证、产品、审核队列、审计、演示、集成诊断 |
+| Agent 运行时 | `apps/server/src/agent` | 一轮对话总控、DAG 规划、拓扑执行、暂停恢复、补偿、人工接管、事实渲染 |
+| 语义层 | `apps/server/src/nlu` | 提示词、LLM 调用、Zod 校验、规则兜底、缓存、注入检测、预算与指标 |
+| 安全内核 | `apps/server/src/policy`、`security` | 静态档 + 风控智能体、五档融合、授权、强验证、额度台账、复述校验、人工审核、熔断、审计链、沙箱 |
+| 工具层 | `apps/server/src/tools` | 29 个业务工具及工具元数据（基础风险、可逆性、补偿器） |
+| 接入层 | `apps/server/src/integration` | 银行核心 simulated / HTTP、短信与人脸 Provider、语音转写、HMAC 签名客户端 |
+| 存储 | `apps/server/src/core` | 多用户账号与银行状态、账本、计划任务、通知、时钟、随机种子 |
+
+### 2.2 组件图
 
 ![系统架构图](assets/architecture.png)
 
 ```mermaid
 flowchart TB
-  subgraph Client["客户端（手机 PWA / IM / 小程序）"]
-    Auth["登录 / 注册 / 访客<br/>HttpOnly 签名 Cookie"]
-    Product["产品端<br/>首页 · 对话 · 账单 · 卡片 · 我的"]
-    Console["/console 评委模式<br/>NLU · DAG · 策略 · 审计 · 攻防 · 成本"]
-    Phone["手机预览<br/>评委模式内的产品端镜像"]
+  subgraph Client["客户端"]
+    PWA["手机 PWA<br/>首页 · 对话 · 账单 · 卡片 · 我的"]
+    Console["/console 评委控制台<br/>DAG · 策略 · 审计 · 攻防 · 指标"]
   end
 
   subgraph API["Fastify API"]
-    AuthAPI["账号 / 产品 / 会话 API"]
-    Chat["POST /api/chat · SSE"]
-    Control["confirm / stepup / interrupt / takeover / rollback"]
-    Demo["demo / audit / stats / security / sandbox"]
+    AuthAPI["认证 / 会话 / 产品 API"]
+    ChatSSE["POST /api/chat · SSE<br/>confirm / stepup / resume"]
+    ReviewAPI["/api/reviews<br/>人工审核队列"]
+    OpsAPI["审计 / 演示 / 集成诊断"]
   end
 
-  subgraph Agent["Agent 运行时"]
-    NLU["意图解析<br/>DeepSeek JSON + 缓存 + 规则"]
-    Planner["DAG 规划器<br/>意图 → 模板实例化"]
-    Executor["拓扑执行器<br/>暂停/恢复/幂等/补偿"]
-    Render["事实渲染 + 数字守卫"]
+  subgraph Runtime["Agent 运行时"]
+    Scan["注入扫描"]
+    NLU["意图理解<br/>LLM + Zod + 规则"]
+    Template["业务模板库<br/>18 个模板"]
+    Planner["DAG 规划器"]
+    Executor["拓扑执行器<br/>暂停 · 重试 · 幂等 · 补偿"]
+    Render["事实渲染<br/>数字守卫"]
   end
 
-  subgraph Trust["安全内核"]
-    Policy["权限引擎"]
-    Ledger["额度台账<br/>Reservation"]
-    Grant["PolicyGrant<br/>一次性授权"]
-    Stepup["人脸/短信挑战"]
+  subgraph Security["安全内核"]
+    Tier["五档权限引擎"]
+    Risk["风控智能体<br/>14 类信号"]
+    Grant["PolicyGrant<br/>摘要 · 一次性 · 90s"]
+    StepUp["WebAuthn / 人脸 / 短信"]
+    Review["人工审核队列<br/>10 分钟延迟"]
+    Limit["额度台账"]
     Breaker["熔断 / 人工接管"]
     Audit["审计哈希链"]
-    Sandbox["worker_threads + vm 沙箱"]
+    Sandbox["worker + vm 沙箱"]
   end
 
   subgraph Tools["工具层"]
     Transfer["转账 / 定时 / AA"]
-    Bills["流水 / 聚合 / 异常 / 沙箱分析"]
-    Wealth["测评 / 产品 / 匹配 / 申购赎回"]
+    Bills["流水 / 聚合 / 异常 / 沙箱"]
+    Wealth["测评 / 产品 / 申赎"]
     Card["卡片 / 虚拟卡 / 调额 / 挂失"]
-    Subs["订阅扫描 / 涨价 / 取消"]
-    Cross["生日 / 锁预算 / 预约礼物 / 日程"]
+    Subs["订阅扫描 / 取消"]
+    Cross["生日 / 锁预算 / 礼物"]
   end
 
-  Gateway["BankingGateway<br/>simulated / http（HMAC · 幂等 · 熔断）"]
-  Verify["OtpProvider / FaceProvider<br/>demo / http"]
-  Bank[(银行核心 / 本地 Ledger)]
-  IdP[(短信 / 活体核验服务)]
+  Gateway["BankingGateway<br/>simulated / HTTP"]
+  LLM["DeepSeek Chat API"]
+  Store[("多用户 store<br/>账号 + 银行状态")]
+  AuditFile[("audit.jsonl<br/>+ checkpoint")]
+  Bank[("银行核心 / 本地 Ledger")]
+  Verify[("短信 / 活体服务")]
 
-  LLM[(DeepSeek Chat API)]
-  Store[(多用户 store<br/>账号 + 独立银行状态 + 审计)]
-  Auth --> AuthAPI
-  Product --> Auth
-  Product --> Chat
-  Product --> AuthAPI
-  Console --> AuthAPI
-  AuthAPI --> Store
-  Console --> Demo
-  Console --> Control
-  Phone --> Control
-  Chat --> NLU --> Planner --> Executor
+  PWA --> AuthAPI
+  PWA --> ChatSSE
+  Console --> OpsAPI
+  Console --> ReviewAPI
+  ChatSSE --> Scan --> NLU
   NLU --> LLM
-  Executor --> Policy --> Ledger
+  NLU --> Template --> Planner --> Executor
+  Executor --> Tier
+  Tier --> Risk
   Executor --> Grant
-  Executor --> Stepup
-  Stepup --> Verify
-  Verify --> IdP
+  Executor --> StepUp --> Verify
+  Executor --> Review
+  Executor --> Limit
   Executor --> Breaker
-  Executor --> Sandbox
-  Executor --> Tools
-  Tools --> Gateway --> Bank
-  Executor --> Render --> Chat
-  Executor --> Audit
-  Console --> Audit
-  Store --> Executor
+  Executor --> Tools --> Gateway --> Bank
+  Executor --> Render --> ChatSSE
+  Executor --> Audit --> AuditFile
+  Tools --> Sandbox
+  AuthAPI --> Store
+  Executor --> Store
 ```
 
-> 渠道说明：手机 PWA 是默认渠道；`/api/chat`、确认、强验证与审计接口与展示层解耦，可被微信/飞书/小程序等 IM 渠道复用。评委控制台需要登录态，只读取当前账号的数据。
+### 2.3 运行拓扑
 
-## 3. 一次对话的完整时序
+- 单 Node 进程同时提供 API、SSE 与前端静态资源；`/console` 与手机 PWA 共用账号与银行数据，各自持有独立会话。
+- 计划任务调度器每 10 秒扫描到点任务：定时转账、预算解锁、礼品送达、日程提醒、人工审核超时。
+- 运行态：会话、授权、验证挑战在内存；账号、银行状态、额度台账、幂等记录、审计在本地文件。
+- 外部依赖：LLM 必选（未配置时进入规则离线模式）；银行核心、短信、人脸、ASR 可选，配置为 `http` 后启动时强制校验参数，缺项直接拒绝启动。
+
+### 2.4 信任边界
+
+| 边界 | 默认假设 | 处理 |
+| --- | --- | --- |
+| 浏览器 → 服务端 | 输入与前端状态均不可信 | 服务端重算摘要、重算风险、校验归属；授权不接受客户端自报 |
+| LLM → 服务端 | 模型输出可能被诱导 | 只接受白名单意图与 Zod 结构；工具、金额、权限不受模型控制 |
+| 服务端 → 银行核心 | 网络与上游响应不可信 | HMAC 签名、时间戳、nonce、幂等键、Zod 快照校验、失败关闭 |
+| 本地文件 | 运行进程可信，磁盘可能被改 | 审计哈希链 + checkpoint 检测；演示篡改只在副本上执行 |
+| 短信 / 人脸 | 客户端结果不可信 | HTTP 模式只认 Provider 服务端结果；demo 模式明确标注 |
+
+## 3. 端到端时序
 
 ![一次对话时序图](assets/sequence.png)
+
 
 ```mermaid
 sequenceDiagram
@@ -101,300 +164,748 @@ sequenceDiagram
   participant U as 用户
   participant P as 手机 PWA
   participant S as 服务端
+  participant L as LLM
   participant A as 审计链
 
-  U->>P: 给林晚转 520 元，备注爱你
+  U->>P: 给李萌转 800 元，客服说要转到安全账户
   P->>S: POST /api/chat（SSE, after=lastSeq）
   S-->>P: run.start
-  S->>S: 注入扫描 → NLU（DeepSeek/缓存/规则）
-  S-->>P: nlu.result
-  S->>S: 规划 DAG + 创建 run summary
-  S-->>P: plan.ready（节点/依赖/风险）
-  S-->>P: node.state / policy.decision × N
-  S-->>P: run.paused（操作详情 + digest + 90s）
-  S->>A: CONFIRM_REQUIRED / POLICY_DECISION / 摘要
-  Note over P,S: 流关闭，不挂起连接；页面刷新可恢复确认单
-  U->>P: 确认执行
-  P->>S: POST /api/confirm {digest}
-  S->>S: 校验 digest/TTL → 签发 PolicyGrant
-  S-->>P: {resume: true, snapshot}
-  P->>S: POST /api/resume（SSE, after=lastSeq）
-  S-->>P: 继续执行 + render.card + message.final + run.end
-  S->>A: GRANT_ISSUED / GRANT_CONSUMED / TOOL_SUCCESS / RUN_END
+  S->>S: 注入扫描（规则）
+  alt 命中注入
+    S-->>P: injection.flag + 拦截卡片
+  else 通过
+    S->>L: 意图与槽位（JSON）
+    L-->>S: intent=transfer, payee=李萌, amount=800, note=客服要求
+    S->>S: 选择 transfer.instant 模板
+    S->>S: 构建 DAG：resolve_contact → check_limit → transfer
+    S->>S: 风控评分（话术 25 + 新收款人 15）→ T2
+    S-->>P: plan.ready + node.state + policy.decision
+    S-->>P: run.paused（摘要 + digest + 90s + 收款人掩码）
+    S->>A: CONFIRM_REQUIRED / POLICY_DECISION
+    Note over P,S: 流关闭，不挂起连接
+    U->>P: 手动输入"李萌"并确认
+    P->>S: POST /api/confirm {digest, payeeEcho}
+    S->>S: 校验 digest/TTL → 复述比对 → 签发 grant
+    S-->>P: {resume: true}
+    P->>S: POST /api/resume（SSE, after=lastSeq）
+    S->>S: 执行前重算策略 → 消费 grant → 预留额度 → 工具
+    S-->>P: render.card + message.final + run.end
+    S->>A: PAYEE_ECHO_VERIFIED / GRANT_CONSUMED / TOOL_SUCCESS
+  end
 ```
 
-### 为什么“暂停即断流”
+T4 分支：
 
-- SSE 不等待人工确认，**发出 `run.paused` 后主动关闭**，避免代理超时、连接泄漏。
-- 确认后新开一条 SSE，`?after=<seq>` 从环形缓冲续传；每会话保留 320 条事件与单调 `seq`。
-- `GET /api/session/:id` 返回完整快照（消息、DAG、pending、额度、上下文），刷新页面可恢复确认单与强验证倒计时。
-- 演示时钟冻结，但确认/验证/预留使用**真实墙钟**计算 TTL，避免“演示时间 10:00、系统时间 17:00 → 一打开就过期”。
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as 用户
+  participant P as PWA
+  participant S as 服务端
+  participant R as 审核席位
 
-## 4. 意图解析（NLU）
-
-### 4.1 三级链路
-
+  U->>P: 转 6 万元
+  P->>S: /api/chat
+  S->>S: 静态档 T4 + 风控档 → T4 / REVIEW
+  S->>R: 创建 review 计划（10 分钟后到期，authorized=false）
+  S-->>P: 节点成功：已受理，转入人工审核
+  Note over R: 10 分钟内用户可撤销
+  alt 审核通过
+    R->>S: POST /api/reviews/:id/approve
+    S->>S: 幂等键 review:<id> 执行转账
+  else 用户撤销 / 银行驳回
+    R->>S: POST /api/reviews/:id/reject
+    S->>S: 取消计划，不发生资金变动
+  else 超时未处理
+    S->>S: 调度器标记 REVIEW_TIMEOUT 并退回
+  end
 ```
-LLM 结构化输出（temperature 0, json_object, 8s, max 520 tokens, 重试 1 次）
-  → zod 宽松校验 + 槽位归一化
-  → 缓存（归一化语句 + 上次收款人/金额，LRU 120）
-  → 规则引擎（确定性正则 + 中文金额 + 联系人/订阅/产品映射）
-```
 
-- 输入提示词包含：演示日期、用户画像、配偶生日、常用联系人（姓名/关系/银行/尾号）、上次收款人/金额、最近 4 条对话；**手机号在发送给 LLM 前脱敏**，原文抽取到的 11 位号码仍用于联系人匹配。
-- 输出只允许白名单意图：`transfer / bills / wealth / card / subscription / crossscene / account / chitchat / unknown`。
-- 槽位按意图做**清理**：转账不会保留产品/卡片槽位，查询不会保留 AA 槽位，减少控制台噪声和提示词污染。
-- LLM 返回的金额若与原文抽取冲突，以原文抽取为准；原文没有数字信号时，金额槽位清空。
-- 解析失败重试一次；仍失败降级规则引擎，并在 `nlu.result.source` 标记 `llm / cache / rules / offline`。
+### 3.1 暂停即断流
 
-### 4.2 模糊与省略
+- SSE 发出 `run.paused` 后主动关闭，避免代理超时与连接泄漏。
+- 每个会话保留 320 条事件与单调 `seq`；`POST /api/resume?after=<seq>` 从环形缓冲续传。
+- `GET /api/session/:id` 返回完整快照（消息、DAG、pending、额度、上下文），刷新页面可恢复确认单与验证倒计时。
+- 演示时钟可冻结，确认、验证、预留 TTL 使用真实墙钟，避免“演示时间 10:00、系统时间 17:00，一打开就过期”。
 
-- “再转 200”：`payee=null`，`references=["lastPayee"]`；规划器从上下文栈补全上次收款人。
-- “给王磊转 500”：两个王磊（同事/房东）→ 返回带银行与尾号的澄清卡片；用户点选后通过 `contactId` 精确进入规划。
-- “我想放一万”：识别金额 10000、动作为“推荐/对比”，不会直接申购；只有出现“申购/买入/购买”等明确动作才追加红色申购节点。
-- 中文金额支持：五百、一千、一万、五万等；AA 场景解析总金额与联系人。
+## 4. 语义理解（NLU）
 
-## 5. DAG 规划
+### 4.1 模型调用契约
 
-规划器（`apps/server/src/agent/planner.ts`）只做一件事：**把意图 + 槽位实例化为固定模板**。LLM 不能自由选工具。
-
-| 场景 | 节点与依赖 |
+| 项 | 值 |
 | --- | --- |
-| 转账 | `resolve_contact → check_limit → transfer`；定时：`resolve → schedule_transfer`；AA：`resolve × N → split_request` |
+| 协议 | OpenAI 兼容 `POST /chat/completions` |
+| 模型 | `deepseek-chat`（可用 `LLM_MODEL` 覆盖） |
+| 温度 | 0 |
+| 输出格式 | `response_format: json_object` |
+| 超时 | 8 秒（`LLM_TIMEOUT_MS`） |
+| 最大输出 | 520 tokens（`LLM_MAX_TOKENS`） |
+| 重试 | 最多 2 次，第二次附带解析失败原因 |
+| 日预算 | 默认 500 次/日（`LLM_DAILY_LIMIT`），超限降级规则引擎 |
+| 运行位置 | 仅服务端；Key 不进入前端、日志或工具输出 |
+
+`apps/server/src/nlu/understand.ts` 的执行顺序：
+
+```text
+rule = parseWithRules(text)                 // 确定性正则、中文金额、联系人映射
+if offline or no budget: return rule
+for attempt in 0..1:
+    response = callChatCompletion(...)
+    parsed   = parseNluContent(response)    // Zod 宽松校验 + 槽位归一化
+    merged   = mergeWithRules(parsed, rule)
+    cacheSet(key, merged)
+    return merged
+if cached: return mergeWithRules(cached, rule)   // 仅模型失败时使用
+return rule
+```
+
+**模型必调**：缓存不再短路成功路径。缓存键由归一化语句、上次收款人、上次金额组成，只在 LLM 网络错误、限流或结构不合法时兜底，返回时标注“模型暂时不可用，使用缓存解析”。
+
+### 4.2 输出白名单与槽位
+
+- 意图：`transfer / bills / wealth / card / subscription / crossscene / account / chitchat / unknown`。
+- 槽位：金额、收款人、手机号、备注、周期、分类、产品、风险等级、卡片动作与尾号、额度、订阅、生日、预算、账户查询、交易动作、争议原因、定时信息、AA 名单与总额、理财动作。
+- 所有字段必须出现，未知填 `null`；禁止额外字段。
+- 意图越权或注入诱导统一落到 `unknown`，并要求 `injectionSuspicion >= 0.9`。
+
+槽位归一化规则：
+
+1. 金额按“元”解析；原文有数字信号时，以原文抽取结果覆盖模型金额；原文无数字则清空金额，防止模型补造。
+2. “再转 200”“就那个”允许 `payee=null`，由 `references=["lastPayee"]` 与上下文栈补全。
+3. 手机号在提示词中脱敏为 `138****0000`；原文抽取到的 11 位号码优先用于联系人匹配。
+4. 按意图清理无关槽位（转账不保留产品/卡片槽位，查询不保留 AA 槽位），降低控制台噪声。
+5. 只有明确出现“申购 / 买入 / 购买”才生成申购节点；“放一万”只做推荐，不触发资金操作。
+
+### 4.3 提示词与隐私
+
+- 提示词包含：演示日期、用户名与风险偏好、配偶生日、常用联系人（姓名 / 关系 / 银行 / 尾号）、上次收款人 / 金额 / 产品、最近 4 条对话。
+- 发送前对手机号与卡号做正则脱敏；不发送密码、Cookie、审计原文、完整流水。
+- 指令明确要求：不执行操作、不查询数据、不生成话术、不编造联系人 / 金额 / 日期，拿不准降低 `confidence`。
+
+### 4.4 澄清闭环
+
+槽位不足时规划器返回 `clarify`，不创建 DAG：
+
+- 同名联系人：返回带银行与尾号的选项，用户点选后以 `contactId` 精确进入规划。
+- 缺金额 / 缺收款人 / 缺卡片 / 缺订阅：返回快捷金额或候选项。
+- 用户可直接输入补充信息，也可点选项；`clarifyDraft` 保存上一轮意图与槽位，合并后继续规划。
+- 用户在澄清态说“取消 / 算了”时清理草稿，不产生任何操作。
+
+## 5. 业务模板库
+
+### 5.1 模板清单
+
+`packages/shared/src/templates.ts` 定义 18 个模板。模板声明所需槽位、步骤与失败策略；规划器按模板补齐参数并生成 DAG。
+
+| 模板 ID | 场景 | 必需槽位 | 步骤 |
+| --- | --- | --- | --- |
+| `transfer.instant` | 即时转账 | 收款人、金额 | 解析收款人 → 校验限额与风控 → 转账 → 回执 |
+| `transfer.scheduled` | 定时转账 | 收款人、金额、日期 | 解析收款人 → 校验 → 创建计划 |
+| `transfer.split` | AA 收款 | 参与人、总额 | 解析参与人 → 校验 → 发起收款 |
+| `bills.report` | 账单分析 | — | 读取流水 → 分类聚合 → 异常检测 → 沙箱洞察 |
+| `wealth.advice` | 理财推荐 | — | 读取测评 → 读取产品 → 匹配 |
+| `wealth.purchase` | 理财申购 | 金额 | 测评 → 产品 → 匹配 → 申购 |
+| `wealth.redeem` | 理财赎回 | — | 读取持仓 → 赎回 |
+| `card.list` | 卡片总览 | — | 读取卡片与额度 |
+| `card.apply_virtual` | 申请虚拟卡 | — | 读取卡片 → 申请 |
+| `card.adjust_limit` | 调整额度 | 目标额度 | 读取卡片 → 调额 |
+| `card.freeze` | 临时冻结 | 卡尾号 | 读取卡片 → 冻结 |
+| `card.unfreeze` | 解除冻结 | 卡尾号 | 读取卡片 → 解冻 |
+| `card.report_loss` | 挂失 | 卡尾号 | 读取卡片 → 挂失 |
+| `subscription.scan` | 订阅体检 | — | 扫描订阅 → 识别涨价 |
+| `subscription.cancel` | 取消订阅 | — | 匹配订阅 → 取消续费 |
+| `crossscene.birthday` | 生日联动 | 生日 | 解析日期 → 锁预算 → 订花 → 订蛋糕 → 日程 |
+| `account.balance` | 余额查询 | — | 读取余额 |
+| `account.transactions` | 流水查询 | — | 查询流水 |
+
+### 5.2 模板选择
+
+`selectTemplate(intent, slots, text)` 是纯函数，便于单测与回放：
+
+```text
+transfer:
+  splitNames 非空                         → transfer.split
+  isScheduled 或命中 定时/预约/每月/明天…  → transfer.scheduled
+  其它                                     → transfer.instant
+wealth:
+  wealthAction=purchase                    → wealth.purchase
+  wealthAction=redeem                      → wealth.redeem
+  其它                                     → wealth.advice
+card:
+  cardAction 映射到 apply_virtual / adjust_limit / freeze / unfreeze / report_loss
+  其它                                     → card.list
+subscription:
+  文本含 取消/关掉/退订 或指定订阅名        → subscription.cancel
+  其它                                     → subscription.scan
+account:
+  query=transactions                       → account.transactions
+  其它                                     → account.balance
+```
+
+模板选中后写入 `dag.template = { id, label, steps }`，控制台与审计可看到“本次用的哪条业务路径”。
+
+### 5.3 失败策略
+
+- 每个模板声明 `onFailure.retries` 与 `onFailure.manualTakeover`。
+- 执行器对上游瞬时故障（`BANK_UNAVAILABLE`、`TIMEOUT`、`*_FAILED`、`RATE_LIMITED`）最多重试 2 次，间隔 250 ms × 次数；业务拒绝不重试。
+- 重试写入审计 `TOOL_RETRY`，节点 `attempts` 随 SSE 推送到前端。
+- 不可逆节点失败或模板要求人工时，后续节点跳过，任务结束为 `PARTIAL`，转人工接管。
+
+## 6. DAG 规划与执行
+
+### 6.1 节点模型
+
+```ts
+interface DagNode {
+  id: string;              // n1, n2…
+  tool: ToolName;          // 固定白名单
+  label: string;
+  args: Record<string, unknown>;
+  deps: string[];
+  risk: 'GREEN' | 'YELLOW' | 'RED';   // 工具基础风险，执行时重算
+  reversible: boolean;
+  compensator?: ToolName;
+  status: NodeStatus;
+  attempts: number;
+  result?: ToolResult;
+  policy?: PolicyDecision;
+}
+```
+
+### 6.2 各意图的规划结果
+
+| 场景 | DAG |
+| --- | --- |
+| 转账 | `resolve_contact → check_limit → transfer` |
+| 定时转账 | `resolve_contact → schedule_transfer` |
+| AA 收款 | `split_request`（参与人与总额在参数内） |
 | 账单 | `fetch_transactions → (aggregate_bills, detect_anomalies, sandbox_analyze)` |
-| 理财 | `assess_risk → list_products → match_products`；申购/赎回再接红色节点 |
+| 理财 | `assess_risk → list_products → match_products`；申购/赎回再接一个红色节点 |
 | 卡片 | `list_cards → apply_virtual / adjust_limit / freeze / unfreeze / report_loss` |
 | 订阅 | `scan_subscriptions → detect_price_changes`；取消再接 `cancel_subscription` |
 | 生日 | `resolve_birthday → lock_funds → (order_flower, order_cake) → create_note` |
 | 账户 | `get_balance` 或 `list_transactions` |
 
-每个节点包含：
+### 6.3 拓扑执行
+
+```text
+while true:
+  if takeover:        → HUMAN_TAKEOVER，保留现场
+  if abortRequested:  → 未执行节点 SKIPPED，状态 PARTIAL
+  node = 第一个依赖已满足的 PENDING/READY 节点
+  if 没有节点:
+      上游失败的节点标记 SKIPPED
+      汇总状态 → DONE / PARTIAL / FAILED
+      结束
+  node.status = RUNNING
+  [HTTP 银行模式] 同步最新快照，失败直接 FAILED（不回退仿真）
+  policy = evaluateNode(state, node, sessionCtx)
+  if DENY:      → 节点 FAILED，任务 FAILED
+  if 非 GREEN:
+      无 grant → 暂停（CONFIRM / STEPUP / REVIEW）
+      有 grant → 校验摘要、TTL、一次性、风险未升级 → 消费
+  if REVIEW 且 transfer: → 写入人工审核队列，节点标记已受理
+  幂等检查 → [转账] 预留额度 → 执行工具 → 提交/释放额度
+  成功写幂等缓存；失败计入熔断
+  写审计 → 下一个节点
+```
+
+### 6.4 批量确认
+
+生日联动包含 3 个黄色操作（锁预算、鲜花、蛋糕）。执行器在第一个暂停点收集同一 run 内后续所有 `CONFIRM + YELLOW` 节点，合并为一张确认单：
+
+- 确认单摘要覆盖全部节点：`sha256(digest1|digest2|…)`。
+- 每个节点仍独立签发 `PolicyGrant`，执行前逐个重校验。
+- 任一节点在确认期间风险升级，旧授权按 `RISK_ESCALATED` 拒绝，重新进入强验证。
+
+### 6.5 幂等
+
+```text
+idemKey = sha256(sessionId | runId | nodeId | tool | stableStringify(args))
+```
+
+- 成功结果写入 `bank.idempotency`，重放直接返回原结果并记录 `IDEMPOTENT_HIT`。
+- 稳定序列化对对象键排序，保证同一参数得到同一键。
+- 人工审核批准使用 `review:<reviewId>` 作为幂等键，重复批准返回 `REVIEW_CLOSED`。
+
+### 6.6 补偿与回退
+
+- 逆拓扑执行补偿器：转账冲正、恢复订阅、取消礼品、解锁资金、注销虚拟卡。
+- 不可逆操作转人工工单，界面显示“已转人工”，不伪装成已回退。
+- 回退报告包含 `compensated / manual / failed` 三组，写入审计 `ROLLBACK`。
+
+### 6.7 中断与人工接管
+
+- 中断在节点边界生效；未执行节点 `SKIPPED`，已完成操作保留，状态 `PARTIAL`。
+- 接管期间执行器在每个节点前检查标记，暂停并保留现场。
+- 控制台可恢复、终止或解锁；所有动作写入审计。
+- 锁定期间聊天只返回锁定提示，不调用 LLM。
+
+### 6.8 状态机
+
+| 状态 | 含义 | 出口 |
+| --- | --- | --- |
+| `IDLE` | 空闲 | 新消息 → `PARSING` |
+| `PARSING` | 语义理解 / 澄清 | 规划 → `PLANNING` / `EXECUTING`；澄清 → `IDLE` |
+| `PLANNING` | 构建 DAG | `EXECUTING` |
+| `EXECUTING` | 拓扑执行 | `AWAIT_CONFIRM` / `AWAIT_STEPUP` / `DONE` / `PARTIAL` / `FAILED` |
+| `AWAIT_CONFIRM` | 等待摘要确认 | 确认 → `EXECUTING` 或 `AWAIT_STEPUP`；取消 → `CANCELLED` |
+| `AWAIT_STEPUP` | 等待多因子 | 通过 → `EXECUTING`；失败 → `LOCKED` / 取消 |
+| `HUMAN_TAKEOVER` | 人工接管 | 恢复 → `EXECUTING`；终止 → `CANCELLED` |
+| `LOCKED` | 安全锁定 | 人工复核 → `IDLE` |
+| `DONE` / `PARTIAL` / `FAILED` / `CANCELLED` | 终态 | 新消息 → `PARSING` |
+
+## 7. 核心算法
+
+### 7.1 五档权限融合
+
+档位由两个独立来源决定，取较高者。风控智能体只能升档。
+
+```text
+staticTier = f(node.risk, amount)
+  GREEN  → T0
+  RED    → max(T3, tierFromAmount(amount))
+  YELLOW → tierFromAmount(amount)，无金额时 T1
+
+agentTier = max(tierFromRiskScore(score), tierFromAmount(amount))
+finalTier = max(staticTier, agentTier)
+
+effectiveRisk = max(node.baseRisk, riskFromTier(finalTier))
+finalTier     = max(finalTier, tierFromRisk(effectiveRisk))
+```
+
+其中：
+
+```text
+tierFromAmount:
+  ≤ ¥1,000        → T1
+  ¥1,000–5,000    → T2
+  ¥5,000–50,000   → T3
+  > ¥50,000       → T4
+
+tierFromRiskScore:
+  0–34            → T1
+  35–59           → T2
+  60–84           → T3
+  85–100          → T4
+
+riskFromTier:
+  T0 → GREEN
+  T1 / T2 → YELLOW
+  T3 / T4 → RED
+```
+
+**单调性**：整条链路只使用 `max`、加法与阈值比较，没有降档分支。静态档、金额档、风控档、基础风险之间任意一项升高，最终档位只会持平或升高。
+
+**自升档防护**：`T2` 映射为 `YELLOW`。若映射为 `RED`，`tierFromRisk(RED)` 会得到 `T3`，把每个 T2 自动抬成多因子档；映射为 `YELLOW` 后，T2 保持“强确认”语义。
+
+**绝对上限**：只有超过产品额度上限才拒绝。
+
+```text
+单笔 > ¥200,000       → DENY / PRODUCT_CEILING
+当日累计 > ¥500,000   → DENY / DAILY_CEILING
+其它大额交易          → 按档位确认、复述、多因子或人工审核
+```
+
+**决策映射**：
+
+| 档位 | 决策 | 执行方式 |
+| --- | --- | --- |
+| T0 | `ALLOW` | 直接执行 |
+| T1 | `CONFIRM` | 参数摘要确认 |
+| T2 | `CONFIRM` | 摘要 + 手输收款人姓名 |
+| T3 | `STEPUP` | 摘要 + 复述 + 人脸 / WebAuthn / 短信 |
+| T4 | `REVIEW`（仅转账） | 摘要 + 复述 + 多因子 + 人工审核 |
+| T4 非转账 | `STEPUP` | 按 T3 强验证执行 |
+
+`PolicyDecision` 同时返回 `tier`、`tierSource: { amount, agent, final }`、`controls`、`risk` 与解释文本。`POLICY_DECISION` 审计记录理由码、金额、额度与最终档位。
+
+### 7.2 风控智能体评分
+
+`apps/server/src/policy/riskAgent.ts` 的 `assessRisk()` 只读取服务端账本与会话事实，模型不参与打分。只读节点（`node.risk === 'GREEN'`）直接返回 0 分 / T0，避免历史流水误升档。
+
+| # | 信号 | 触发条件 | 权重 |
+| --- | --- | --- | --- |
+| 1 | `AMOUNT_RATIO` | 金额 / 可用资金 > 80% / > 50% / > 30% | 28 / 18 / 8 |
+| 2 | `BEHAVIOR_BASELINE` | 金额 ≥ 近 30 天日均支出 5× / 3× / 2× | 30 / 20 / 10 |
+| 3 | `NEW_PAYEE` | 近 90 天无往来 / 从未转账 | 8 / 15 |
+| 4 | `NIGHT_HOURS` | 00:00–05:00 且金额 > ¥1,000 | 12 |
+| 5 | `VELOCITY` | 10 分钟内转出 ≥ 3 笔 / 2 笔 | 15 / 8 |
+| 6 | `STRUCTURING` | 24 小时内贴近 1,000 / 5,000 / 50,000 阈值的交易 ≥ 3 笔 / 2 笔 | 25 / 12 |
+| 7 | `SESSION_RISK` | 本会话有失败或注入命中 | `10 + min(15, n×5)` |
+| 8 | `INJECTION_SUSPICION` | 模型注入嫌疑 ≥ 0.5 | 20 |
+| 9 | `LOW_CONFIDENCE` | 意图置信度 < 0.6 且金额 > ¥1,000 | 12 |
+| 10 | `BLOCKLIST_PAYEE` | 收款人命中风险名单 | 100 |
+| 11 | `FRAUD_KEYWORD` | 备注含“安全账户 / 配合调查 / 屏幕共享”等话术 | 25 |
+| 12 | `PAYEE_JUST_CHANGED` | 收款人相对上次被替换，且语句含“换 / 改成” | 15 |
+| 13 | `NEW_DEVICE` | 新设备或新浏览器会话（预留给设备指纹接入） | 12 |
+| 14 | `DAILY_CEILING_NEAR` | 本次后超过当日上限的 80% | 15 |
+
+```text
+score = clamp(Σ weight, 0, 100)
+level = low (<35) / medium (35–59) / high (60–84) / critical (≥85)
+agentTier = tierFromRiskScore(score)
+verdictTier = max(agentTier, tierFromAmount(amount))
+requiresReview = verdictTier === 'T4' || 命中风险名单
+```
+
+当前接线情况：第 1–12 与第 14 类信号由执行器、账本与会话直接提供；第 13 类已定义权重，等待设备指纹来源；风险名单内置一条演示数据，行方反欺诈名单作为接入位。
+
+评分结果随决策返回：
 
 ```ts
-interface DagNode {
-  id: string;
-  tool: ToolName;
-  label: string;
-  args: Record<string, unknown>;
-  deps: string[];
-  risk: 'GREEN' | 'YELLOW' | 'RED';  // 初始基础等级，执行时由策略引擎重算
-  reversible: boolean;               // 是否具备补偿能力
-  status: NodeStatus;
-  result?: ToolResult;
-  policy?: PolicyDecision;
-  compensator?: ToolName;
+{
+  score: 40,
+  level: 'medium',
+  tier: 'T2',
+  signals: [{ code: 'FRAUD_KEYWORD', weight: 25, detail: '备注含高风险话术「安全账户」' }, …],
+  engine: 'risk-agent-v1',
+  requiresReview: false
 }
 ```
 
-### 批量黄色确认
-
-生日联动包含 3 个黄色操作（锁预算、鲜花、蛋糕）。执行器在第一个暂停点收集**同一 run 内后续所有黄色、可确认节点**，合并为一张确认单，一次确认后为每个节点签发独立 grant；任意节点若在确认期间风险升级，会再次暂停要求强验证。
-
-## 6. 执行器
-
-拓扑顺序执行（按插入顺序，依赖满足才运行）：
-
-```
-while 有可执行节点:
-  RUNNING → 策略判定 → (无 grant 则暂停) → 校验/消费 grant
-  → 幂等检查 → [转账] 预留额度 → 执行工具 → 提交/释放额度
-  → 写审计 → 下一个
-```
-
-- **幂等键**：`sha256(sessionId|runId|nodeId|tool|稳定序列化 args)`；结果写入持久化台账，重放返回原结果。
-- **暂停**：节点进入 `AWAIT_CONFIRM / AWAIT_STEPUP`，写入 `pending` 与摘要；返回后 SSE 关闭。
-- **恢复**：确认/强验证后签发 grant，`POST /resume` 再次进入执行器；grant 校验包含节点、摘要、TTL、一次性消费与**当前风险等级**。
-- **并发安全**：额度采用预留-提交两阶段；工具与幂等写入单进程串行；跨进程生产需数据库行锁/分布式锁。
-- **失败**：工具失败会记入熔断计数；依赖该节点的后续节点标记 `SKIPPED`；已成功的节点保留，run 结束为 `PARTIAL`。
-- **中断**：请求在节点边界生效；未执行节点 `SKIPPED`，已完成操作保留，UI 显示“部分完成”而不是“已取消”。
-- **回退**：逆拓扑执行补偿器（冲正转账、取消预约、恢复订阅、解锁资金）；不可逆操作转人工工单，绝不假装已回退。
-- **人工接管**：执行器在每个节点前检查接管标记；控制台可恢复或终止；所有动作写审计。
-
-## 7. 权限引擎与授权
-
-### 7.1 有效风险算法
+### 7.3 操作摘要与一次性授权
 
 ```text
-effectiveRisk(tool, args, state):
-  if breakerLocked: DENY
-  base = tool.baseRisk
-  switch tool:
-    transfer:
-      used = committed(day) + held(day)
-      if amount > 50,000元: DENY（演示硬限额）
-      risk = amount <= max(0, 1000元 - used) ? YELLOW : RED
-      if amount > 5000元: risk = RED，需要人脸+短信
-    purchase/redeem/report_loss/unfreeze: RED
-    adjust_card_limit: amount <= 2000元 ? YELLOW : RED
-    schedule/split/subscription_cancel/virtual_card/freeze/lock_funds/gift<=300元: YELLOW
-    query/sandbox/render helpers: GREEN
-  reasons = [AUTO_QUERY | SMALL_TRANSFER | DAILY_LIMIT_EXCEEDED | HIGH_VALUE | RED_BASE | ...]
-  decision = GREEN→ALLOW, YELLOW→CONFIRM, RED→STEPUP
-```
-
-关键点：**1000 元是黄色/红色的分界线，不是硬上限**。红色大额转账经强验证后允许执行，但会占用当日累计台账，使后续请求继续走红色。
-
-### 7.2 一次性授权
-
-```
 digest = sha256(userId | sessionId | runId | nodeId | tool | canonical(args))
-grant  = {nodeId, tool, risk, amount, digest, expiresAt(90s), usedAt?}
+batchDigest = sha256(digests.join('|'))
 ```
 
-- 用户确认的是 `digest`；确认后修改金额/收款人会导致执行前摘要不匹配。
-- grant 绑定当前有效风险；如果确认期间额度被其他操作占用导致风险升级，旧 grant 拒绝并要求重新强验证。
-- 消费是原子的：校验通过立即 `usedAt=now`；重放返回 `GRANT_ALREADY_USED`。
-- 黄色批量确认：确认单摘要覆盖所有节点，但每个节点仍获得自己的 grant；执行时逐个校验。
+`canonical()` 对对象键排序、数组保序，保证同一参数得到同一摘要。
 
-### 7.3 强验证
+授权校验五件事：
 
-- 红色默认人脸；单笔 > 5000 元、挂失/解挂额外要求短信验证码。
-- demo 与 HTTP 模式都必须"先发送、再校验"：demo 下发一次性随机码（5 分钟、用后即废），HTTP 由签约短信 / 活体服务送达并由服务端确认 `passed`，客户端不能伪造。固定万能码已移除。
-- 生物识别因子：录入通行密钥（WebAuthn platform，Windows Hello / Touch ID / Face ID）后，红色强验证的人脸因子可由本机生物识别签名满足，服务端校验 origin、rpId、challenge、公钥签名与签名计数器；未录入时才回落到演示人脸通道，且界面明确标注"未采集真实人脸"。
-- 语音输入：Chrome / Edge / Android 走浏览器原生 Web Speech API；其它浏览器录音后交给 `ASR_MODE=http` 的 OpenAI 兼容转写服务，未配置时明确报错而不是伪造识别结果。
-- 计划调度器：每 10 秒扫描到点的定时转账、预算释放、礼品送达与日程提醒，执行前重新校验硬限额与可用余额，幂等键绑定计划 id，结果写入提醒中心与审计链。
-- 3 次错误触发熔断；验证令牌绑定同一操作摘要、90 秒、单次有效。生产仍需设备指纹、活体等级评估与人工复核。
+1. 授权存在。
+2. 未被使用（`usedAt` 为空）。
+3. 节点一致。
+4. 摘要一致。
+5. 未超过 90 秒，且当前有效风险不高于授权风险。
 
-## 8. 额度台账
+通过后立即写入 `usedAt`，重放返回 `GRANT_ALREADY_USED`。摘要或节点不一致会触发安全锁定，防止改单与重放。
 
+### 7.4 收款人复述
+
+T2 起，确认单要求用户手输收款人姓名：
+
+```text
+normalizeName:
+  全角字符 → 半角
+  去空白、·、•、・
+  转小写
+  去首尾空白
+
+verifyPayeeEcho: normalizeName(input) === normalizeName(payee)
 ```
-used = ΣCOMMITTED(dayKey) + ΣHELD(dayKey, 未过期)
-remaining = max(0, 1000元 - used)
-reserve(amount)  // 执行前，创建 HELD，120s 过期
-commit(reservationId) // 工具成功后
-release(reservationId) // 失败/超时/回退
+
+- 展示时脱敏：`王磊 → 王*`，避免确认单直接给出完整姓名。
+- 比对在服务端完成，客户端无法跳过。
+- 不一致记一次失败，写 `PAYEE_ECHO_MISMATCH`；连续 3 次触发 10 分钟锁定。
+- 通过写 `PAYEE_ECHO_VERIFIED`，之后才签发授权。
+
+### 7.5 额度台账
+
+```text
+used      = Σ COMMITTED(dayKey) + Σ HELD(dayKey, 未过期)
+remaining = max(0, 1,000 元 − used)
+reserve(amount)        // HELD，120 秒过期
+commit(reservationId)  // 工具成功后
+release(reservationId) // 失败、超时或回退
 ```
 
-- `withUserLock(userId)` 在同一进程内串行化额度相关判定与预留，避免并发“读-判-写”。
-- 预留允许超过 remaining（红色强验证后允许大额），关键是让后续请求看到真实占用。
-- `dayKey` 使用演示时区的日期字符串，不依赖定时器跨天。
-- 回退转账时会释放对应预留，恢复当日黄色额度。
+- ¥1,000 是“小额 / 大额”的记账分界，用来决定基础风险与展示剩余额度，不再作为硬上限。
+- 大额转账经强验证或人工审核后仍可执行，同时占用当日累计，让后续请求看到真实占用。
+- 同一用户的额度判定、预留与提交通过 `withUserLock()` 串行化，避免并发“读-判-写”双花。
+- `dayKey` 使用演示时区日期字符串，不依赖定时器跨天。
 
-## 9. 幻觉防护
+### 7.6 数字守卫
 
-1. **事实锁定**：`render/result.ts` 只读取工具结果拼装文字与卡片；LLM 不生成数字。
-2. **数字守卫**：`render/numberGuard.ts` 扫描文本中的 `¥金额` 与 `百分比`，必须命中工具结果/卡片/策略证据集合（同时允许“分/元”两种尺度与绝对值）；未命中则整段回退为“操作已完成，明细见下方卡片”，并计数。
-3. **证据链**：消息携带交易流水号/持仓 ID/订阅 ID，审计记录可追溯。
-4. **风险测评/产品收益**只来自内置问卷与合成产品表，不调用外部行情；适当性规则（等级→可购上限、年度有效期、过期拦截申购）已实现，但题目与阈值需按行内办法校准。
-
-## 10. 注入防御
-
-三层：
-
-1. **输入规则**：覆盖指令覆盖、提示词窃取、审计删除、身份伪造、跳过验证、角色扮演、工具标记注入、数据越权等特征，打分 ≥45 直接阻断。
-2. **模型侧信号**：LLM 返回 `injectionSuspicion`，≥0.75 升级阻断；规则阻断不因模型未命中而放行。
-3. **服务端强制**：工具白名单、意图白名单、策略引擎、grant、额度台账与审计独立于提示词；即使模型被说服，实际资金操作仍受权限约束。
-
-连续 2 次注入命中触发 10 分钟熔断；控制台可人工复核解锁。
-
-## 11. 审计哈希链
-
+```text
+allowed = 收集工具结果、卡片、策略证据中的所有数值
+          每个数值同时登记 n、n/100、|n|、|n|/100
+文本中的 ¥金额 与 百分比逐个比对
+允许误差 0.011
+任一数字不在证据集合 → 整段替换为“操作已完成，明细见下方卡片。”
 ```
+
+守卫只约束金额与百分比，不约束普通文字；命中情况计入指标，`RUN_END` 审计携带守卫统计。
+
+### 7.7 注入评分
+
+`apps/server/src/nlu/injection.ts` 定义 9 类规则：指令覆盖、提示词窃取、审计破坏、身份伪造、跳过验证、强制转账、角色扮演、数据越权、工具注入。
+
+```text
+score = min(100, Σ 命中规则权重)
+score ≥ 45 → block
+score ≥ 20 → warn
+模型 injectionSuspicion ≥ 0.75 → 升级为 block
+规则 block 不因模型未命中而放行
+连续 2 次命中 → 10 分钟锁定
+```
+
+### 7.8 审计哈希链
+
+```text
 payloadHash = sha256(JSON.stringify(redactedPayload))
-hash = sha256(seq | prevHash | type | ts | summary | payloadHash)
+hash = sha256(seq | prevHash | userId | type | ts | summary | payloadHash)
 ```
 
-- 单例串行 `appendFileSync`，避免 Windows 并发写交错；每 50 条写 checkpoint（count + head）。
-- 手机号、卡号、token 等字段与文本模式脱敏后落盘；写盘失败不阻断内存链，但校验会暴露。
+- 单例串行 `appendFileSync`，避免 Windows 并发写交错。
+- 每 50 条写 checkpoint（count + head）。
+- 手机号、卡号、token 等字段与文本模式在哈希前脱敏。
 - `GET /api/audit/verify` 重算全部哈希并与 checkpoint 比对。
-- “篡改演示”只在副本文件上修改，主链绝不污染；控制台展示被检测的序号与原因。
-- 回放器按 `runId` 从链中重建执行时间线（规划、策略、节点、授权、结束）。
+- 篡改演练只在最近 20 条的副本上修改，主链不污染。
+- 用户视角的审计列表在最近一次 `DEMO_RESET` 处截断，避免重置后仍显示旧数据。
 
-## 12. 熔断与人工接管
+## 8. 安全设计
 
-- 连续 3 次工具失败或 2 次注入命中 → 用户级锁定 10 分钟；所有节点策略直接 DENY。
-- 锁定后聊天仅返回锁定提示，不调用 LLM。
-- 人工接管状态互斥：执行中暂停调度、保留现场；恢复/终止/解锁均写审计。
-- 生产建议：接入工单、双人复核、设备风险评分与冷却期。
+### 8.1 威胁模型
 
-## 13. 受限沙箱
+| 资产 |  adversary | 控制 |
+| --- | --- | --- |
+| 资金与额度 | 用户误操作、被盗会话、改单、重放 | 摘要绑定、一次性授权、复述、多因子、人工审核、额度台账 |
+| 账户与 PII | 跨用户越权、提示词外泄、日志泄露 | 服务端归属校验、提示词脱敏、审计脱敏、HttpOnly Cookie |
+| 业务事实 | 模型幻觉、伪造回执 | 事实锁定渲染、数字守卫、证据链 |
+| 审计记录 | 内部篡改、删除 | 哈希链、checkpoint、校验接口、副本演练 |
+| 银行核心 | 伪造响应、重放、重复扣款 | HMAC、时间戳、nonce、幂等键、Zod 校验、熔断、失败关闭 |
+| 计算环境 | 恶意脚本、资源耗尽 | worker + vm、无 IO、超时、静态检查、大小限制 |
 
-- `worker_threads` 独立线程 + `node:vm` 上下文；vm 内 800ms 软超时，worker 2.2s 硬终止。
-- 上下文只有脱敏账单切片与安全内建对象；无 `require / fs / net / process`；禁止动态代码生成。
-- 静态检查拦截 `require(`、`process.`、`import` 等；返回值大小限制 20KB。
+### 8.2 五档权限矩阵
+
+| 档位 | 典型金额 / 操作 | 控制 | 用户体验 |
+| --- | --- | --- | --- |
+| T0 自动 | 查询、分析、账单、产品浏览 | `AUTO` | 直接返回结果 |
+| T1 摘要确认 | ≤ ¥1,000 转账、可逆黄色操作 | `SUMMARY_CONFIRM` | 一张确认单，一次确认 |
+| T2 强确认 | ¥1,000–5,000 转账；风控评分 35–59 | `SUMMARY_CONFIRM` + `PAYEE_ECHO` | 摘要 + 手输收款人姓名 |
+| T3 强验证 | ¥5,000–50,000；风控评分 60–84；理财申赎、挂失 | `SUMMARY_CONFIRM` + `PAYEE_ECHO` + `STEPUP_MFA` | 复述 + 人脸 / WebAuthn / 短信 |
+| T4 人工审核 | > ¥50,000；风控评分 ≥ 85；命中名单 | 上述 + `MANUAL_REVIEW` | 受理后延迟到账，10 分钟内可撤销 |
+| 拒绝 | 单笔 > ¥200,000 或当日 > ¥500,000 | `DENY` | 提示走柜面或提额流程 |
+
+### 8.3 确认单
+
+- 确认单展示：操作类型、收款人（脱敏）、金额、来源账户、备注、档位、控制项、风控评分与命中信号、有效期。
+- 用户确认的是 `digest`，服务端据此校验参数未被修改。
+- T1 / T2 确认后签发授权；T3 确认后进入强验证；T4 确认后进入人工审核。
+- 取消或 90 秒超时：节点 `SKIPPED`，不产生资金变动。
+
+### 8.4 人工审核队列
+
+T4 转账不直接执行，也不直接拒绝：
+
+```text
+创建 review 计划
+  kind = review
+  executeAt = now + 10 分钟
+  payload.authorized = false
+  payload.authorizationRef = review:<runId>:<nodeId>
+  幂等键 = review:create:<runId>:<nodeId>
+  审计 MANUAL_REVIEW_QUEUED + 通知
+```
+
+生命周期：
+
+| 动作 | 结果 | 审计 |
+| --- | --- | --- |
+| 用户撤销 | 取消计划，不发生资金变动 | `MANUAL_REVIEW_WITHDRAWN` |
+| 银行驳回 | 取消计划，不发生资金变动 | `MANUAL_REVIEW_REJECTED` |
+| 审核通过 | 置 `authorized=true`，以 `review:<id>` 幂等执行转账 | `MANUAL_REVIEW_APPROVED` |
+| 超时未处理 | 调度器标记 `cancelled` / `REVIEW_TIMEOUT` | `MANUAL_REVIEW_EXPIRED` |
+| 重复批准 | 返回 `REVIEW_CLOSED` | — |
+
+演示环境的批准接口对已登录用户开放，缺少审核席位的角色权限与双人复核；该限制已登记在安全自评 P0 清单。
+
+### 8.5 强验证
+
+- 红色操作默认人脸；单笔 > ¥5,000、挂失、解挂额外要求短信。
+- 挑战绑定 `sessionId + nodeId + digest`，90 秒有效，最多 3 次。
+- WebAuthn：录入通行密钥后，人脸因子可由本机生物识别签名满足；服务端校验 origin、rpId、challenge、公钥签名与签名计数器。
+- 短信：必须由服务端先发送，再校验；demo 模式下发一次性随机码（5 分钟、用后即废），固定万能码已移除。
+- HTTP 人脸：只认 Provider 返回的 `passed`，客户端传 `faceDone=true` 不生效。
+- 短信连续错误 3 次触发锁定。
+
+### 8.6 熔断与人工接管
+
+- 连续 3 次工具失败或 2 次注入命中 → 用户级锁定 10 分钟。
+- 锁定后所有节点策略直接 `DENY`，聊天不调用 LLM。
+- 授权摘要异常（`DIGEST_MISMATCH` / `NODE_MISMATCH`）直接锁定。
+- 人工接管与自动执行互斥；接管、恢复、终止、解锁均写审计。
+- 成功执行会清零失败计数；注入计数保留到人工解锁或重置。
+
+### 8.7 账号与会话
+
+- 密码：`scryptSync` + 16 字节随机 salt，`timingSafeEqual` 校验。
+- 登录态：HMAC-SHA256 签名的 HttpOnly Cookie（7 天，SameSite=Lax，HTTPS 下 Secure），内含服务端会话 `sid`；每次请求同时校验签名与会话记录。
+- 注册短信验证、找回密码（一次性 token，5 分钟）、可开关登录 MFA、修改密码踢出其他设备。
+- 所有业务 API 统一要求登录；跨用户会话、确认、回放返回 404。
+- 访客一键创建独立用户与独立银行状态，反复体验不互相污染。
+
+### 8.8 受限沙箱
+
+- `worker_threads` 独立线程 + `node:vm` 上下文。
+- vm 内 800 ms 软超时，worker 2.2 s 硬终止；内存上限 64 MB / 16 MB。
+- 上下文只有脱敏账单切片与安全内建对象；无 `require / fs / net / process`。
+- 静态检查拦截 `require(`、`process.`、`import` 等；返回值限制 20 KB。
 - 优先使用确定性统计模板；LLM 代码生成是可选实验能力，默认不启用。
-- 明确的局限：vm 不是生产级安全边界，生产需容器 / microVM / seccomp / 资源配额。
+- 定位为演示级隔离，生产需容器 / microVM / seccomp / cgroup。
 
-## 13.5 银行核心与核验接入层
+### 8.9 银行核心接入
 
-- **统一网关**：`apps/server/src/integration/banking/types.ts` 定义 `BankingGateway`；工具不直接依赖 Ledger，而是调用统一方法（转账、冲正、理财申赎、卡片、订阅、定时、资金锁定、礼物、AA）。
-- **两种实现**：`SimulatedBankingGateway` 复用本地 Ledger；`HttpBankingGateway` 通过 `GET /v1/snapshot` 同步账户数据、`POST /v1/ops` 执行操作。
-- **签名 HTTP**：canonical = method + path/query + timestamp + nonce + sha256(body)，HMAC-SHA256 签名；写操作带 `Idempotency-Key`；超时 / 429 / 5xx 重试；连续失败开启客户端熔断。
-- **快照校验**：Zod 校验账户、卡、流水、订阅、产品、持仓、锁定、礼物、日程；非法响应拒绝落盘。账户数据以核心为准，用户资料 / 联系人仍留在本地身份域。
-- **失败语义**：`BANKING_MODE=http` 时首次同步失败直接返回 503；运行中同步失败使当前节点失败并记 `BANK_UNAVAILABLE`，不会拿合成数据兜底。写失败明确报错；补偿/回退也经同一网关。
-- **核验 Provider**：`OtpProvider` / `FaceProvider` 分 `demo` 与 `http`；HTTP 人脸必须由服务端向合作方确认 `passed` 后才能签发 `PolicyGrant`，页面点击不能伪造通过。固定演示码只在 `SMS_MODE=demo` 下发。
-- **联调**：`scripts/bank-core-stub.ts` 实现同一契约；`npm run smoke:bank` / `smoke:full` 让六场景与强验证全部经 HTTP 适配层执行。
+- 统一接口：`BankingGateway`，工具只依赖该接口。
+- 两种实现：`SimulatedBankingGateway` 复用本地 Ledger；`HttpBankingGateway` 通过 `GET /v1/snapshot` 同步、`POST /v1/ops` 执行。
+- 签名：
 
-## 14. 账号、数据与种子
+```text
+canonical = method + "\n" + pathWithQuery + "\n" + timestamp + "\n" + nonce + "\n" + sha256(body)
+signature = HMAC-SHA256(appSecret, canonical)
+```
 
-### 14.1 多用户 store
+- 写操作携带 `Idempotency-Key`，重试复用同一 key；429 / 5xx / 网络错误重试，4xx 业务错误不重试。
+- 连续 5 次上游失败开启 30 秒客户端熔断。
+- 快照经 Zod 校验后落盘；非法响应拒绝写入。
+- `BANKING_MODE=http` 时同步失败直接 503 或节点 `BANK_UNAVAILABLE`，不使用合成数据兜底。
+- 补偿与回退走同一网关。
 
-- `data/runtime/store.json` 保存 `users: { userId: { auth, bank } }`，原子写（临时文件 + rename）。
-- `auth`：姓名、手机号（仅服务端）、脱敏手机号、scrypt salt/hash、是否访客、配偶与风险偏好、注册时间。
-- `bank`：账户、卡、流水、订阅、理财持仓、订单、日程、额度预留、幂等记录、用户级安全状态。
-- 每个 API 请求通过签名 Cookie 解析 `authUser`，Agent 会话写入 `session.userId`；读取/确认/中断/接管/审计回放都校验归属，跨用户会话返回 404。
-- 访客一键体验创建新的独立用户（同一套合成角色数据），反复体验不会互相污染。
-- 注册用户按 userId 派生随机种子，生成独立的 6 个月合成流水；配偶与风险偏好来自注册资料。
-- 演示账号 / 访客数据 seed 固定为 20261030，保证答辩日期与异常交易稳定。
+### 8.10 安全不变式
 
-### 14.2 认证
+| 编号 | 不变式 | 实现位置 | 验证 |
+| --- | --- | --- | --- |
+| I1 | 模型不能选择工具或改写节点 | `planner.ts` 固定模板 | `planner.test.ts` |
+| I2 | 非 T0 节点无授权不执行 | `executor.ts` | `policy.test.ts` |
+| I3 | 授权绑定用户、会话、节点、工具与参数 | `grant.ts` | `policy.test.ts` |
+| I4 | 授权一次性、90 秒、风险不降级 | `grant.ts` | `policy.test.ts` |
+| I5 | 风控只能升档 | `engine.ts` / `riskAgent.ts` | `policy.test.ts` / `safeguards.test.ts` |
+| I6 | T2 起必须通过收款人复述 | `control.ts` / `safeguards.ts` | `safeguards.test.ts` |
+| I7 | 审核批准幂等，重复批准不二次扣款 | `safeguards.ts` | `safeguards.test.ts` |
+| I8 | 面向用户的数字来自工具证据 | `render/result.ts` / `numberGuard.ts` | smoke |
+| I9 | 注入拦截独立于模型判断 | `orchestrator.ts` / `injection.ts` | `nlu.test.ts` |
+| I10 | 审计内容被改可检测 | `auditChain.ts` | `audit.test.ts` |
+| I11 | 跨用户会话、确认、回放不可读 | `security/auth.ts` + 路由 | smoke |
+| I12 | 上游失败显式失败，不回退仿真 | `executor.ts` / `HttpBankingGateway` | `integration.test.ts` |
 
-- 密码：Node `scryptSync` + 16 字节随机 salt，`timingSafeEqual` 校验。
-- 登录态：HMAC-SHA256 签名的 HttpOnly Cookie（7 天，SameSite=Lax，HTTPS 下 Secure），Cookie 里带服务端会话 id `sid`；每次请求同时校验签名与服务端会话记录，撤销设备或改密后旧 Cookie 立即 401。更换 `AUTH_SECRET` 会使全部登录失效。
-- 注册短信验证（`AUTH_REQUIRE_PHONE_VERIFY`）、找回密码（一次性 `resetToken`，5 分钟、用后即废）、可开关的登录 MFA（`LOGIN_MFA`）、修改密码后踢出其他设备；验证码挑战与重置令牌只存内存，明文验证码不落库。
-- 限流：注册 / 登录 / 访客按 IP 的简单内存桶；生产应放到网关或 Redis。
-- 公开接口为 `/api/health`、`/api/auth/*` 与登录页展示用的 `/api/public/config`；其余 API 统一 401。
+## 9. 数据模型
 
-### 14.3 会话与重置
+| 实体 | 关键字段 | 存储 |
+| --- | --- | --- |
+| `AuthUser` | id、姓名、手机号、scrypt 哈希、配偶、风险偏好、访客标记 | `store.json` |
+| `BankState` | 账户、卡、流水、订阅、产品、持仓、订单、锁定、礼物、日程、争议、额度预留、幂等、安全状态 | `store.json` |
+| `SessionInternal` | userId、消息、DAG、pending、grants、challenges、上下文、run 摘要 | 内存 |
+| `Dag` | runId、intent、title、template、节点数组 | 会话快照 |
+| `PolicyDecision` | baseRisk、effectiveRisk、tier、tierSource、controls、risk、decision、reasons、limit | 节点 + 审计 |
+| `RiskVerdict` | score、level、tier、signals、engine、requiresReview | `PolicyDecision.risk` |
+| `PolicyGrant` | id、userId、sessionId、runId、nodeId、tool、risk、digest、issuedAt、expiresAt、usedAt | 内存 |
+| `ChallengeRecord` | id、nodeId、digest、methods、attemptsLeft、face/sms/bio 状态 | 内存 |
+| `ScheduleItem` | id、kind、title、amountCents、executeAt、status、payload、lastError | `store.json` |
+| `AuditEntry` | seq、ts、type、summary、userId、sessionId、runId、payload、prevHash、hash | `audit.jsonl` |
 
-- 会话在内存中保存消息、DAG、pending、上下文；服务重启会丢失进行中的会话，但银行数据与登录 Cookie 仍持久化。
-- `/api/demo/reset` 只重置**当前账号**的本地数据并创建新会话；`BANKING_MODE=http` 时会从银行核心重新同步，不修改行方账务；审计链不被擦除，而是追加 `DEMO_RESET`。
-- 产品端与评委控制台使用不同的 sessionStorage key，各自拥有独立演示会话，但共享同一账号的银行数据。
+## 10. 可靠性与可观测性
 
-## 15. 核心文件地图
+- **SSE 断线续传**：单调 `seq` + 320 条环形缓冲；客户端用 `after` 续传。
+- **节点延迟**：默认 220 ms（`DEMO_NODE_DELAY_MS`），让 DAG 状态可观察、可中断、可接管。
+- **银行快照缓存**：默认 2.5 秒 TTL，同一用户的并发同步合并为一个 in-flight 请求。
+- **重试**：工具层对瞬时故障最多 2 次；HTTP 客户端对网络 / 429 / 5xx 重试一次。
+- **熔断**：Agent 侧 3 次失败 / 2 次注入；HTTP 客户端 5 次失败 / 30 秒。
+- **指标**：LLM 调用次数、延迟、tokens、缓存命中、注入拦截、数字守卫命中、预算余量，控制台可读。
+- **审计**：每次策略、授权、复述、验证、工具、审核、补偿、熔断都入链。
+
+## 11. 验证
+
+### 11.1 自动化测试
+
+`npm test`：10 个文件、123 个测试全部通过。
+
+| 文件 | 覆盖 |
+| --- | --- |
+| `policy.test.ts` | 五档融合、绝对上限、授权、额度、风险升级 |
+| `safeguards.test.ts` | 复述、人工审核批准/撤销/超时、T4 |
+| `templates.test.ts` | 18 个模板选择与必需槽位 |
+| `planner.test.ts` | 各意图 DAG、澄清、上下文补全 |
+| `nlu.test.ts` | 规则解析、合并、注入检测、缓存 |
+| `audit.test.ts` | 哈希链、checkpoint、篡改检测 |
+| `ledger.test.ts` | 预留、提交、释放、并发锁 |
+| `integration.test.ts` | HMAC 签名、幂等、快照校验、熔断 |
+| `risk.test.ts` | 风险测评与适当性 |
+| `dispute.test.ts` | 争议受理与窗口校验 |
+
+### 11.2 端到端 smoke
+
+`npm run smoke` 启动真实服务，覆盖：
+
+- 登录、访客、登出与会话隔离；
+- 余额、账单、理财、卡片、订阅、生日六类场景；
+- T1 确认、T2 复述（错误 + 正确）、T3 强验证；
+- T4 大额转账 → 审核队列 → 批准 → 余额扣减与审计；
+- 注入拦截、熔断、人工解锁；
+- 定时任务执行、额度预留与释放；
+- 审计链校验、用户隔离。
+
+`npm run smoke:bank` 与 `npm run smoke:full` 额外覆盖 HTTP 银行核心与 HTTP 短信/人脸通道。
+
+### 11.3 构建与浏览器回归
+
+- `npm run build`：构建服务端类型检查与前端产物。
+- `node tools/qa-product.mjs`：生产构建 + headless Chrome + CDP，33 项真实浏览器交互回归（登录、首页、对话、确认、验证、账单、卡片、我的、控制台四档视口）。
+- `npm run qa:pure`：纯产品版 9 个页面，确认无演示标注残留。
+
+### 11.4 复现
+
+```bash
+npm install
+npm run dev          # 服务端 8787 + Vite 5173
+npm test             # 123 个测试
+npm run smoke        # 端到端
+npm run build        # 生产构建
+npm start            # 单端口运行
+```
+
+## 12. 已知边界
+
+1. **单实例运行态**：会话、授权、验证挑战在内存；多实例会破坏额度、会话与审计一致性。生产需 Postgres / Redis 与分布式锁。
+2. **审核席位缺少 RBAC**：`/api/reviews/:id/approve` 对已登录用户开放，生产需独立审核角色与双人复核。
+3. **设备指纹未接入**：`NEW_DEVICE` 信号已定义权重，当前没有可信来源，未参与评分。
+4. **风险名单为演示数据**：内置一条虚构名单，行方反欺诈名单是接入位。
+5. **五个工具名已预留、未路由**：`list_holdings`、`get_txn_detail`、`open_dispute`、`list_schedules`、`cancel_schedule` 在类型层声明，规划器尚未生成对应节点，工具注册表也未绑定处理器；现有链路不受影响。
+6. **沙箱为演示级隔离**：`vm` 不构成生产安全边界。
+7. **审计无外部锚定**：哈希链可检测内容篡改，无法阻止整文件删除或替换；生产需 WORM、KMS 签名与时间戳。
+8. **演示通道**：短信、人脸、银行核心默认 demo / simulated；切换到 `http` 需行方联调、模板报备与密钥管理。
+9. **模型依赖外部服务**：DeepSeek 不可用时降级规则引擎，复杂表达覆盖有限。
+10. **未做渗透测试与第三方评估**：安全自评为开发期自查，不构成合规或审计结论。
+
+## 13. 文件地图
 
 | 路径 | 职责 |
 | --- | --- |
-| `apps/server/src/agent/planner.ts` | 意图 → DAG 模板 |
-| `apps/server/src/agent/executor.ts` | 拓扑执行、暂停、幂等、额度、熔断 |
-| `apps/server/src/agent/control.ts` | 确认/强验证/中断/接管/回退状态机 |
-| `apps/server/src/agent/orchestrator.ts` | 一轮对话总控、消息渲染、上下文 |
-| `apps/server/src/policy/engine.ts` | 有效风险等级与理由码 |
+| `packages/shared/src/riskTiers.ts` | 五档定义、金额阈值、信号与映射 |
+| `packages/shared/src/templates.ts` | 18 个业务模板与选择函数 |
+| `packages/shared/src/types.ts` | DAG、策略、授权、会话、审计等共享类型 |
+| `apps/server/src/agent/orchestrator.ts` | 一轮对话总控、澄清、上下文、渲染 |
+| `apps/server/src/agent/planner.ts` | 意图 + 槽位 → DAG + 模板标记 |
+| `apps/server/src/agent/executor.ts` | 拓扑执行、暂停、重试、幂等、额度、T4 转审核 |
+| `apps/server/src/agent/control.ts` | 确认、复述、强验证、中断、接管、回退 |
+| `apps/server/src/agent/compensation.ts` | 逆序补偿 |
+| `apps/server/src/policy/engine.ts` | 静态档 + 动态档融合与决策 |
+| `apps/server/src/policy/riskAgent.ts` | 14 类信号评分 |
+| `apps/server/src/policy/safeguards.ts` | 复述、掩码、人工审核队列 |
 | `apps/server/src/policy/grant.ts` | 操作摘要与一次性授权 |
 | `apps/server/src/policy/limits.ts` | 预留-提交额度台账 |
-| `apps/server/src/policy/stepup.ts` | 人脸/短信挑战与 Provider 编排 |
-| `apps/server/src/integration/banking/*` | 银行核心适配（simulated / http / 快照校验） |
-| `apps/server/src/integration/verification.ts` | 短信 / 人脸 Provider（demo / http） |
-| `apps/server/src/integration/httpClient.ts` | HMAC 签名、幂等重试、客户端熔断 |
-| `apps/server/src/security/auditChain.ts` | 追加式哈希链、checkpoint、校验、篡改演练 |
-| `apps/server/src/security/sandbox/pool.ts` | worker + vm 沙箱 |
-| `apps/server/src/security/auth.ts` | 签名 Cookie、登录钩子、会话归属 |
-| `apps/server/src/routes/auth.ts` | 注册 / 登录 / 访客 / 登出 |
-| `apps/server/src/routes/product.ts` | 产品首页 / 交易 / 资料 API |
-| `apps/server/src/core/store.ts` | 多用户账号与银行状态存储 |
-| `apps/server/src/nlu/*` | LLM 调用、提示词、校验、缓存、规则、注入 |
+| `apps/server/src/policy/stepup.ts` | 人脸 / 短信 / WebAuthn 挑战 |
+| `apps/server/src/nlu/*` | 提示词、LLM、Zod、规则、缓存、注入、预算 |
+| `apps/server/src/tools/*` | 29 个工具与元数据 |
 | `apps/server/src/render/*` | 事实渲染、卡片、数字守卫 |
-| `apps/web/src/components/console/*` | DAG、审计、攻防、指标 |
-| `apps/web/src/components/phone/*` | 聊天、确认单、强验证、富卡片 |
-| `apps/web/src/product/*` | 产品端 PWA：登录后首页、对话、账单、卡片、我的 |
-| `apps/web/src/auth/*` | 登录 / 注册 / 访客与路由守卫 |
-| `apps/web/public/*` | manifest、service worker、PWA 图标 |
+| `apps/server/src/security/auditChain.ts` | 哈希链、checkpoint、校验、篡改演练 |
+| `apps/server/src/security/breaker.ts` | 熔断与锁定 |
+| `apps/server/src/security/sandbox/*` | worker + vm 沙箱 |
+| `apps/server/src/integration/banking/*` | simulated / HTTP 银行核心 |
+| `apps/server/src/integration/httpClient.ts` | HMAC 签名、重试、客户端熔断 |
+| `apps/server/src/routes/*` | 认证、会话、聊天、确认、审核、审计、产品 |
+| `apps/web/src/components/phone/*` | 对话、确认单、强验证、富卡片 |
+| `apps/web/src/components/console/*` | DAG、策略、审计、攻防、指标 |
+| `apps/web/src/product/*` | 手机 PWA 首页、账单、卡片、我的 |
 
-## 16. 设计权衡
+## 14. 设计权衡
 
-- **不用 LangChain/AutoGen**：链路固定、可审计比“自主选择工具”更重要；显式状态机更容易保证确认/回退/幂等语义。
-- **JSON 文件 + 内存台账 + 签名 Cookie**：原型零运维、Windows 友好；生产替换为 Postgres + Redis + 消息队列、集中会话与服务端限流即可。银行数据可通过 `BANKING_MODE=http` 接入真实核心，工具接口不变。
+- **固定模板 + DAG，放弃开放式工具选择**：换取工具白名单、参数可校验、失败可补偿、每一步可审计。银行场景更看重可控性。
+- **模型每轮必调，缓存只兜底**：语义覆盖优先于延迟与成本；日预算与超时保证演示可用。
+- **五档而非三档**：把“确认”“复述”“多因子”“人工审核”拆成独立控制项，避免大额交易被一刀切拒绝。
+- **风控只升档**：评分与静态规则解耦，任何单一信号都不会降低另一条路径的风险判断。
+- **人工审核延迟到账**：给用户撤销窗口，也给银行复核窗口；批准幂等，重复操作不二次扣款。
+- **单进程 + JSON 文件**：原型零运维、Windows 友好；生产替换为数据库、Redis、消息队列与集中审计。
 - **PWA 而非原生包**：免应用商店与开发者账号，HTTPS 即可安装；代价是 iOS 安装引导与部分原生能力受限。
-- **固定模板 DAG**：牺牲开放式规划，换取工具白名单、金额可校验、失败可补偿；对银行场景是合理取舍。
-- **演示节点延迟 220ms**：让 DAG 状态可观察、可中断、可接管；通过环境变量可关闭。
-
-## 17. 下一步
-
-- 账号侧补齐 KYC/证件核验、设备指纹、账号注销与安全通知；
-- 银行客户绑定、mTLS、异步对账与核心历史流水分页；
-- 多轮复杂意图合并与更完整的指代消解；
-- 审计链锚定到外部 WORM/时间戳服务；
-- 生产级沙箱与数据加密；
-- IM 渠道适配、语音输入与无障碍优化；
-- 公网稳定托管、LLM 配额预算与滥用防护；
-- 评测集与红队回归（意图、槽位、注入、越权、数字一致性）。

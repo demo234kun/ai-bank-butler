@@ -14,9 +14,9 @@
 
 | 要求 | 状态 | 位置 / 待办 |
 | --- | --- | --- |
-| 系统架构图 | ✅ | [architecture.md](architecture.md) §2 分层图（客户端 / API / Agent 运行时 / 安全内核 / 接入层）+ 导出 PNG；§3 一次对话完整时序 + 导出 PNG |
+| 系统架构图 | ✅ | [architecture.md](architecture.md) §2 分层图（客户端 / API / Agent 运行时 / 安全内核 / 工具 / 接入层）+ 导出 PNG；§3 对话时序（含 T2 复述与 T4 审核）+ 导出 PNG |
 | 架构图导出图片 | ✅ | `docs/assets/architecture.png`、`docs/assets/sequence.png`，已在 architecture.md 内嵌；重新生成：`node tools/render-diagrams.mjs` |
-| 核心算法说明 | ✅ | architecture.md §4 意图解析三级链路、§5 DAG 规划、§6 执行器、§7 权限引擎与一次性授权、§8 额度台账、§9 幻觉防护、§10 注入防御、§11 审计哈希链、§12 熔断与接管、§13 沙箱 |
+| 核心算法说明 | ✅ | architecture.md §4 NLU（模型必调 + 规则合并）、§5 业务模板库（18 个）、§6 DAG 规划与执行、§7 核心算法（五档融合、14 信号风控评分、摘要授权、复述、额度、数字守卫、注入、审计链） |
 | 安全设计文档 | ✅ | [security-self-assessment.md](security-self-assessment.md)、[feature-description.md](feature-description.md) 第二、三节 |
 | 接口与数据契约 | ✅ | [api.md](api.md)、[openapi-banking.yaml](openapi-banking.yaml)、[banking-integration.md](banking-integration.md) |
 | 功能与设计说明 | ✅ | [feature-description.md](feature-description.md)（按赛题任务与核心技术要求逐条写） |

@@ -505,12 +505,12 @@ def p06(prs):
 
 def p07(prs):
     s = slide(prs)
-    header(s, "06 意图理解与任务规划", "固定任务图 + 拓扑执行", page_label="对标：核心技术要求 · 意图理解与任务规划")
+    header(s, "06 语义理解与任务规划", "大模型理解 + 业务模板 + DAG", page_label="对标：核心技术要求 · 语义理解与任务规划")
 
     card(s, MX, CT + 0.12, 7.5, 3.34)
     tf = box(s, MX + 0.3, CT + 0.32, 6.9, 0.5)
     para(tf, "“我爱人下周生日，帮我提前安排”", 14.5, ACCENT, True, first=True, space_after=2, line=1.05)
-    para(tf, "未被显式要求转账或下单 → 识别为跨场景规划任务 → 生成可确认的方案", 10.8, MUTED, space_after=0, line=1.1)
+    para(tf, "大模型解析意图与槽位 → 命中「生日联动」模板（18 个业务模板之一）→ 补齐日期与预算 → 生成可确认的 DAG", 10.8, MUTED, space_after=0, line=1.1)
 
     def node(x, y, w, h, title, sub, color):
         nn = shape(s, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, w, h, fill=PANEL_2, line_color=color, radius=0.08)
@@ -540,7 +540,7 @@ def p07(prs):
 
     tf = box(s, 8.5, CT + 0.16, 4.2, 3.3)
     para(tf, "规划的四个约束", 14, TEXT, True, first=True, space_after=12, line=1.05)
-    add_bullets(tf, [("执行图由意图决定", "　每个意图对应预置任务图（解析→校验→执行→渲染），工具白名单随之锁定，模型无法扩展自己的权限边界"),
+    add_bullets(tf, [("模型只给意图与槽位", "　每条消息都调用大模型解析，规则只做预抽取与故障兜底；执行路径从 18 个业务模板中选择，模型不生成调用链"),
                      ("槽位缺失先澄清", "　金额、收款人、产品为空时不默认填值，不带着空收款人执行资金操作"),
                      ("上下文可接住省略", "　“再转 200”“就那个”“换成 1000”由上下文栈解析"),
                      ("执行可控可恢复", "　待确认可取消、执行中可中断、人工可接管；确认即断流，按 seq 续传")],

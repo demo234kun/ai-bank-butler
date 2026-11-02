@@ -1,0 +1,753 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 银行管家 · 会办事、可审计的银行 AI 智能体</title>
+<meta name="description" content="AI 银行管家：把自然语言拆成可执行 DAG，按五档权限自动执行、确认、收款人复述、多因子验证或转人工；余额与回执只由工具结果渲染，全程哈希链审计。">
+<meta name="theme-color" content="#0d2b22">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d2b22'/%3E%3Cpath d='M20 44 32 20l12 24' fill='none' stroke='%23d9b878' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M25 37h14' stroke='%23d9b878' stroke-width='3.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  --ink:#10231c;
+  --forest:#0d2b22;
+  --forest-2:#123a2d;
+  --jade:#1f6a52;
+  --paper:#f7f3e9;
+  --paper-2:#efe9da;
+  --paper-3:#e7dfcd;
+  --gold:#c79a55;
+  --gold-soft:#e2c48f;
+  --muted:#5f6c65;
+  --line:rgba(16,35,28,.14);
+  --line-dark:rgba(247,243,233,.16);
+  --t0:#2f7d5b; --t1:#7a9b3b; --t2:#c9791f; --t3:#b3392e; --t4:#7a2c4e;
+  --serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong",Georgia,serif;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+  --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,"Liberation Mono",monospace;
+  --max:1180px;
+  --radius:4px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.7;-webkit-font-smoothing:antialiased}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition:none!important}}
+img{max-width:100%;display:block}
+a{color:inherit}
+::selection{background:var(--gold-soft);color:var(--forest)}
+.skip{position:absolute;left:-999px;top:0;background:var(--gold);color:var(--forest);padding:10px 16px;z-index:100}
+.skip:focus{left:12px;top:12px}
+.wrap{width:min(var(--max),calc(100% - 48px));margin:0 auto}
+@media(max-width:640px){.wrap{width:calc(100% - 32px)}}
+
+/* nav */
+.nav{position:sticky;top:0;z-index:50;background:rgba(13,43,34,.92);backdrop-filter:blur(14px);border-bottom:1px solid rgba(247,243,233,.1);color:var(--paper)}
+.nav-row{display:flex;align-items:center;justify-content:space-between;gap:24px;height:68px}
+.brand{display:flex;align-items:center;gap:12px;text-decoration:none;flex:none}
+.brand svg{width:30px;height:30px;flex:none}
+.brand b{font-family:var(--serif);font-size:19px;font-weight:700;letter-spacing:.04em;display:block;line-height:1.25;color:var(--paper)}
+.brand-sub{display:block;font-size:9px;letter-spacing:.22em;color:var(--gold-soft);text-transform:uppercase;line-height:1.4}
+.nav-links{display:flex;align-items:center;gap:28px;font-size:14px}
+.nav-links a{text-decoration:none;color:rgba(247,243,233,.76);transition:color .2s}
+.nav-links a:hover{color:var(--paper)}
+.nav-cta{border:1px solid rgba(226,196,143,.5);color:var(--gold-soft)!important;padding:8px 16px;border-radius:2px;transition:background .2s,color .2s}
+.nav-cta:hover{background:var(--gold-soft);color:var(--forest)!important}
+.nav-toggle{display:none;background:none;border:1px solid var(--line-dark);color:var(--paper);width:38px;height:38px;border-radius:2px;font-size:18px;line-height:1;cursor:pointer}
+@media(max-width:900px){
+  .nav-links{position:absolute;top:68px;left:0;right:0;background:var(--forest);flex-direction:column;align-items:flex-start;gap:0;padding:8px 24px 20px;border-bottom:1px solid var(--line-dark);display:none}
+  .nav-links.open{display:flex}
+  .nav-links a{padding:12px 0;width:100%;font-size:15px}
+  .nav-cta{margin-top:8px;text-align:center}
+  .nav-toggle{display:block}
+}
+
+/* hero */
+.hero{position:relative;background:radial-gradient(120% 90% at 82% 8%,#1a4a3a 0%,var(--forest) 55%,#092018 100%);color:var(--paper);overflow:hidden}
+.hero::before{content:"";position:absolute;right:-12%;top:-30%;width:900px;height:900px;border-radius:50%;border:1px solid rgba(226,196,143,.14);box-shadow:0 0 0 90px rgba(226,196,143,.045),0 0 0 180px rgba(226,196,143,.025),0 0 0 300px rgba(226,196,143,.012);pointer-events:none}
+.hero-grid{position:relative;display:grid;grid-template-columns:1.15fr .85fr;gap:56px;align-items:center;padding:84px 0 76px}
+.eyebrow{display:inline-flex;align-items:center;gap:10px;font-size:12px;letter-spacing:.18em;color:var(--gold-soft);text-transform:uppercase;margin:0 0 22px}
+.eyebrow::before{content:"";width:24px;height:1px;background:var(--gold)}
+h1{font-family:var(--serif);font-weight:700;font-size:clamp(38px,5.2vw,66px);line-height:1.18;letter-spacing:.01em;margin:0 0 24px}
+h1 em{font-style:normal;color:var(--gold-soft);text-decoration:underline;text-decoration-color:rgba(199,154,85,.6);text-decoration-thickness:1px;text-underline-offset:9px}
+.hero-lead{font-size:clamp(15px,1.5vw,17px);line-height:1.9;color:rgba(247,243,233,.78);max-width:560px;margin:0 0 32px}
+.hero-actions{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:44px}
+.btn{display:inline-flex;align-items:center;gap:10px;padding:13px 22px;border-radius:2px;font-size:14px;text-decoration:none;border:1px solid transparent;transition:transform .2s,background .2s,border-color .2s}
+.btn:hover{transform:translateY(-2px)}
+.btn-gold{background:var(--gold-soft);color:var(--forest);font-weight:600}
+.btn-gold:hover{background:#edd3a6}
+.btn-ghost{border-color:rgba(247,243,233,.28);color:var(--paper)}
+.btn-ghost:hover{border-color:rgba(247,243,233,.6);background:rgba(247,243,233,.05)}
+.btn svg{width:15px;height:15px}
+.hero-facts{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--line-dark);padding-top:24px;max-width:620px}
+.fact{padding-right:30px;margin-right:30px;border-right:1px solid var(--line-dark)}
+.fact:last-child{border-right:0;margin-right:0;padding-right:0}
+.fact b{font-family:var(--serif);font-size:24px;font-weight:700;display:block;line-height:1.2;color:var(--gold-soft)}
+.fact span{font-size:12px;color:rgba(247,243,233,.58);letter-spacing:.04em}
+.hero-visual{position:relative;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px}
+.phone{position:relative;width:min(290px,78%);border-radius:30px;overflow:hidden;border:1px solid rgba(226,196,143,.35);box-shadow:0 34px 70px -24px rgba(0,0,0,.65),0 0 0 10px rgba(247,243,233,.035);background:#0a1f18}
+.phone img{width:100%;height:auto}
+.hero-card{width:100%;max-width:290px;background:rgba(247,243,233,.97);color:var(--ink);padding:14px 16px;border-radius:3px;border-top:2px solid var(--gold);box-shadow:0 18px 40px -24px rgba(0,0,0,.55);font-size:12.5px;line-height:1.65}
+.hero-card b{display:block;font-size:12px;letter-spacing:.12em;color:var(--jade);margin-bottom:4px}
+.hero-card .quote{font-family:var(--serif);font-size:15px;line-height:1.6;color:var(--ink)}
+.hero-card .tier{display:inline-block;margin-top:8px;font-size:11px;letter-spacing:.08em;padding:3px 8px;border:1px solid var(--t2);color:var(--t2);border-radius:2px}
+.hero-note{text-align:center;font-size:11.5px;letter-spacing:.08em;color:rgba(247,243,233,.45);margin:0}
+@media(max-width:980px){
+  .hero-grid{grid-template-columns:1fr;gap:52px;padding:64px 0 60px}
+  .hero-visual{flex-direction:row;flex-wrap:wrap;gap:20px}
+  .phone{width:210px}
+  .hero-card{max-width:260px}
+  .hero-note{width:100%}
+}
+@media(max-width:560px){
+  .hero-visual{flex-direction:column;gap:14px}
+  .hero-card{padding:11px 13px}
+  .hero-card .quote{font-size:13px}
+  .fact{padding-right:18px;margin-right:18px}
+  .fact b{font-size:20px}
+}
+
+/* sections */
+.section{padding:96px 0}
+.section-head{display:flex;justify-content:space-between;align-items:flex-end;gap:40px;margin-bottom:48px}
+.section-head .label{font-size:11.5px;letter-spacing:.22em;color:var(--jade);text-transform:uppercase;display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.section-head .label::before{content:"";width:18px;height:1px;background:var(--jade)}
+h2{font-family:var(--serif);font-weight:700;font-size:clamp(28px,3.6vw,44px);line-height:1.28;margin:0;letter-spacing:.01em}
+.section-head p{max-width:400px;font-size:14.5px;line-height:1.9;color:var(--muted);margin:0}
+@media(max-width:800px){.section{padding:72px 0}.section-head{flex-direction:column;align-items:flex-start;gap:18px;margin-bottom:36px}}
+
+/* flow */
+.flow{background:var(--paper);border-top:1px solid var(--line)}
+.flow-grid{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);border-left:1px solid var(--line)}
+.flow-step{padding:26px 24px 30px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:rgba(255,255,255,.18)}
+.flow-step .no{font-family:var(--mono);font-size:11px;color:var(--gold);letter-spacing:.14em;display:block;margin-bottom:26px}
+.flow-step h3{font-family:var(--serif);font-size:20px;margin:0 0 8px;font-weight:700}
+.flow-step p{font-size:13.5px;line-height:1.8;color:var(--muted);margin:0}
+.flow-step .tag{display:inline-block;margin-top:16px;font-size:11px;letter-spacing:.06em;border:1px solid var(--line);padding:3px 8px;border-radius:2px;color:var(--jade)}
+@media(max-width:900px){.flow-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.flow-grid{grid-template-columns:1fr}.flow-step{padding:22px 20px}}
+
+/* scenarios */
+.scenarios{background:linear-gradient(180deg,var(--paper) 0%,var(--paper-2) 100%);border-top:1px solid var(--line)}
+.scene-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+.scene{background:var(--paper);padding:28px 26px 26px;transition:background .25s}
+.scene:hover{background:#fbf8f0}
+.scene .icon{width:34px;height:34px;color:var(--jade);margin-bottom:20px}
+.scene h3{font-family:var(--serif);font-size:20px;margin:0 0 8px;font-weight:700}
+.scene p{font-size:13.5px;line-height:1.8;color:var(--muted);margin:0 0 16px;min-height:68px}
+.scene code{display:block;font-family:var(--mono);font-size:11.5px;line-height:1.7;color:var(--jade);background:rgba(31,106,82,.06);border-left:2px solid rgba(31,106,82,.35);padding:8px 10px}
+@media(max-width:900px){.scene-grid{grid-template-columns:repeat(2,1fr)}.scene p{min-height:0}}
+@media(max-width:600px){.scene-grid{grid-template-columns:1fr}}
+.shots{display:grid;grid-template-columns:repeat(3,1fr);gap:26px;margin-top:56px;align-items:end}
+.shot{text-align:center}
+.shot img{width:100%;max-width:340px;margin:0 auto;border-radius:20px;border:1px solid var(--line);box-shadow:0 20px 40px -24px rgba(16,35,28,.4);background:#fff}
+.shot span{display:block;margin-top:14px;font-size:12px;letter-spacing:.12em;color:var(--muted)}
+.shot:nth-child(2){transform:translateY(-18px)}
+@media(max-width:820px){.shots{grid-template-columns:repeat(3,1fr);gap:12px}.shot:nth-child(2){transform:none}.shot span{font-size:10.5px;letter-spacing:.06em}}
+@media(max-width:560px){.shots{grid-template-columns:1fr;gap:32px}.shot img{max-width:260px}}
+
+/* security */
+.security{background:var(--forest);color:var(--paper);position:relative;overflow:hidden}
+.security::after{content:"";position:absolute;left:-10%;bottom:-40%;width:700px;height:700px;border-radius:50%;border:1px solid rgba(226,196,143,.1);box-shadow:0 0 0 80px rgba(226,196,143,.025),0 0 0 170px rgba(226,196,143,.012);pointer-events:none}
+.security .section-head .label{color:var(--gold-soft)}
+.security .section-head .label::before{background:var(--gold)}
+.security .section-head p{color:rgba(247,243,233,.62)}
+.tiers{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;position:relative;z-index:1}
+.tier{border:1px solid var(--line-dark);background:rgba(247,243,233,.035);padding:22px 18px 24px;position:relative;transition:background .25s,transform .25s;border-top:3px solid var(--c)}
+.tier:hover{background:rgba(247,243,233,.07);transform:translateY(-4px)}
+.tier .code{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--c);filter:brightness(1.45);display:block;margin-bottom:8px}
+.tier h3{font-family:var(--serif);font-size:19px;margin:0 0 4px;font-weight:700}
+.tier .en{font-size:10.5px;letter-spacing:.14em;color:rgba(247,243,233,.42);text-transform:uppercase}
+.tier p{font-size:12.5px;line-height:1.75;color:rgba(247,243,233,.7);margin:14px 0 16px;min-height:88px}
+.tier .req{display:flex;flex-wrap:wrap;gap:4px}
+.tier .req span{font-size:10px;letter-spacing:.03em;border:1px solid var(--line-dark);padding:2px 6px;color:rgba(247,243,233,.6);border-radius:2px}
+@media(max-width:1020px){.tiers{grid-template-columns:repeat(2,1fr)}.tier p{min-height:0}}
+@media(max-width:560px){.tiers{grid-template-columns:1fr}}
+.fuse{margin-top:36px;border:1px solid var(--line-dark);padding:26px 28px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:26px;position:relative;z-index:1;background:rgba(9,32,24,.45)}
+.fuse div{font-size:12.5px;line-height:1.8;color:rgba(247,243,233,.62)}
+.fuse b{display:block;font-family:var(--mono);font-size:13px;color:var(--gold-soft);margin-bottom:6px;letter-spacing:.02em}
+@media(max-width:760px){.fuse{grid-template-columns:1fr;padding:22px}}
+.dark-note{margin-top:24px;font-size:12.5px;color:rgba(247,243,233,.5);line-height:1.8;position:relative;z-index:1}
+.dark-note strong{color:var(--gold-soft);font-weight:600}
+.invariants{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line-dark);border:1px solid var(--line-dark);margin-top:56px;position:relative;z-index:1}
+.inv{background:var(--forest);padding:26px 24px}
+.inv b{display:block;font-family:var(--serif);font-size:16.5px;margin-bottom:8px;font-weight:700;color:var(--paper)}
+.inv p{font-size:12.5px;line-height:1.8;color:rgba(247,243,233,.6);margin:0}
+@media(max-width:900px){.invariants{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.invariants{grid-template-columns:1fr}}
+
+/* architecture */
+.arch{background:var(--paper)}
+.map{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);box-shadow:0 24px 50px -38px rgba(16,35,28,.4)}
+.map-col{background:#fdfbf5;padding:22px 18px 20px;min-width:0}
+.map-col h4{margin:0 0 16px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--muted);font-weight:600;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.map-col h4 b{font-family:var(--serif);font-size:16px;letter-spacing:0;color:var(--ink);font-weight:700}
+.node{border:1px solid var(--line);background:#fff;padding:9px 10px;font-size:12px;line-height:1.55;margin-bottom:7px;overflow-wrap:anywhere}
+.node:last-child{margin-bottom:0}
+.node small{display:block;color:var(--muted);font-size:10.5px;line-height:1.55;margin-top:1px}
+.node.accent{border-left:3px solid var(--jade)}
+.node.gold{border-left:3px solid var(--gold);background:rgba(199,154,85,.07)}
+.node.dark{background:var(--forest);border-color:var(--forest);color:var(--paper)}
+.node.dark small{color:rgba(247,243,233,.58)}
+.map-foot{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:14px;font-size:11.5px;color:var(--muted)}
+.map-foot b{font-weight:600;color:var(--ink)}
+.arch-caption{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-top:18px;font-size:12px;color:var(--muted)}
+.arch-caption a{color:var(--jade);text-decoration:none;border-bottom:1px solid rgba(31,106,82,.35);white-space:nowrap}
+.layers{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;margin-top:44px;background:var(--line);border:1px solid var(--line)}
+.layer{background:var(--paper);padding:24px;border-top:3px solid var(--l)}
+.layer span{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--muted);display:block;margin-bottom:12px}
+.layer h3{font-family:var(--serif);font-size:18px;margin:0 0 8px;font-weight:700}
+.layer p{font-size:12.5px;line-height:1.8;color:var(--muted);margin:0}
+@media(max-width:980px){.map{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:900px){.layers{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:620px){.map{grid-template-columns:1fr}}
+@media(max-width:560px){.layers{grid-template-columns:1fr}.arch-caption{flex-direction:column;align-items:flex-start}}
+
+/* evidence */
+.evidence{background:var(--paper-2);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);background:var(--paper)}
+.metric{padding:30px 28px;border-right:1px solid var(--line)}
+.metric:last-child{border-right:0}
+.metric b{display:block;font-family:var(--serif);font-size:clamp(34px,4vw,50px);line-height:1.1;font-weight:700;color:var(--jade)}
+.metric span{display:block;margin-top:8px;font-size:13px;color:var(--muted)}
+.metric small{display:block;margin-top:2px;font-size:11px;color:rgba(95,108,101,.75)}
+@media(max-width:900px){.metrics{grid-template-columns:repeat(2,1fr)}.metric:nth-child(2){border-right:0}.metric:nth-child(1),.metric:nth-child(2){border-bottom:1px solid var(--line)}}
+@media(max-width:560px){.metrics{grid-template-columns:1fr}.metric{border-right:0;border-bottom:1px solid var(--line)}.metric:last-child{border-bottom:0}}
+.evidence-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;margin-top:48px;align-items:start}
+@media(max-width:900px){.evidence-grid{grid-template-columns:1fr}}
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table th,.table td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.table th{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600;border-bottom:1px solid rgba(16,35,28,.3)}
+.table td:first-child{font-family:var(--mono);font-size:12px;color:var(--jade);white-space:nowrap}
+.cmd{background:var(--forest);color:rgba(247,243,233,.86);padding:24px 24px 18px;border-radius:3px;font-family:var(--mono);font-size:12.5px;line-height:2.05;overflow-x:auto;box-shadow:0 18px 36px -28px rgba(16,35,28,.7)}
+.cmd .c{color:rgba(247,243,233,.4)}
+.cmd .g{color:var(--gold-soft)}
+.cmd-title{font-size:11px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin-bottom:10px}
+.evidence-note{font-size:12px;color:var(--muted);line-height:1.8;margin-top:16px}
+.evidence-note a{color:var(--jade);text-decoration:none;border-bottom:1px solid rgba(31,106,82,.35)}
+
+/* docs */
+.docs{background:var(--paper)}
+.doc-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+.doc{display:flex;flex-direction:column;background:var(--paper);padding:26px 24px;text-decoration:none;min-height:180px;transition:background .25s}
+.doc:hover{background:#fbf8f0}
+.doc .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;color:var(--gold);margin-bottom:22px}
+.doc h3{font-family:var(--serif);font-size:19px;margin:0 0 8px;font-weight:700;line-height:1.4}
+.doc p{font-size:12.5px;line-height:1.8;color:var(--muted);margin:0 0 18px}
+.doc .more{margin-top:auto;font-size:12px;color:var(--jade);display:flex;align-items:center;gap:6px}
+.doc .more svg{width:12px;height:12px;transition:transform .2s}
+.doc:hover .more svg{transform:translate(3px,-3px)}
+@media(max-width:900px){.doc-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.doc-grid{grid-template-columns:1fr}.doc{min-height:0}}
+
+/* limits */
+.limits{background:linear-gradient(180deg,var(--paper) 0%,#f2ecdd 100%);border-top:1px solid var(--line)}
+.limit-box{border:1px solid rgba(179,57,46,.25);background:rgba(179,57,46,.035);padding:34px 36px;display:grid;grid-template-columns:.9fr 1.1fr;gap:44px}
+.limit-box h2{font-size:clamp(26px,3vw,36px)}
+.limit-box .intro{font-size:13.5px;color:var(--muted);line-height:1.9;margin-top:12px}
+.limit-list{margin:0;padding:0;list-style:none;counter-reset:lim}
+.limit-list li{counter-increment:lim;position:relative;padding:0 0 14px 30px;font-size:13px;line-height:1.8;color:var(--ink);border-bottom:1px solid rgba(16,35,28,.09);margin-bottom:14px}
+.limit-list li:last-child{border-bottom:0;margin-bottom:0;padding-bottom:0}
+.limit-list li::before{content:"0" counter(lim);position:absolute;left:0;top:1px;font-family:var(--mono);font-size:10.5px;color:var(--t3);letter-spacing:.08em}
+.limit-list b{font-weight:600}
+@media(max-width:800px){.limit-box{grid-template-columns:1fr;padding:26px;gap:26px}}
+
+/* footer */
+.footer{background:var(--forest);color:var(--paper);padding:56px 0 30px}
+.footer-top{display:flex;justify-content:space-between;align-items:flex-start;gap:40px;padding-bottom:38px;border-bottom:1px solid var(--line-dark)}
+.footer .brand b{font-size:22px}
+.footer .brand-sub{color:var(--gold-soft)}
+.footer p{font-size:12.5px;line-height:1.9;color:rgba(247,243,233,.55);max-width:420px;margin:16px 0 0}
+.footer-links{display:flex;flex-wrap:wrap;gap:12px 28px;font-size:13px;justify-content:flex-end;max-width:440px}
+.footer-links a{text-decoration:none;color:rgba(247,243,233,.72);transition:color .2s}
+.footer-links a:hover{color:var(--gold-soft)}
+.footer-bottom{display:flex;justify-content:space-between;gap:20px;padding-top:22px;font-size:11.5px;color:rgba(247,243,233,.38);letter-spacing:.03em}
+@media(max-width:760px){.footer-top{flex-direction:column}.footer-links{justify-content:flex-start}.footer-bottom{flex-direction:column;gap:8px}}
+
+/* reveal */
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s ease}
+.reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none}}
+:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+.limit-link{display:inline-flex;align-items:center;gap:8px;margin-top:22px;font-size:12.5px;color:var(--t3);text-decoration:none;border-bottom:1px solid rgba(179,57,46,.35);padding-bottom:2px}
+.limit-link:hover{color:#8d2a21}
+</style>
+<noscript><style>.reveal{opacity:1;transform:none}</style></noscript>
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+
+<header class="nav">
+  <div class="wrap nav-row">
+    <a class="brand" href="#top" aria-label="AI 银行管家首页">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="none" stroke="#d9b878" stroke-width="2"/><path d="M20 44 32 20l12 24" fill="none" stroke="#d9b878" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M25 37h14" stroke="#d9b878" stroke-width="3.2" stroke-linecap="round"/></svg>
+      <span class="brand-text"><b>AI 银行管家</b><span class="brand-sub">AI BANK BUTLER</span></span>
+    </a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="打开导航">≡</button>
+    <nav class="nav-links" id="nav-links" aria-label="主导航">
+      <a href="#product">产品</a>
+      <a href="#security">五档权限</a>
+      <a href="#architecture">架构</a>
+      <a href="#evidence">验证证据</a>
+      <a href="#docs">文档</a>
+      <a class="nav-cta" href="https://github.com/demo234kun/ai-bank-butler" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">银行 AI 智能体 · 产品原型</p>
+      <h1>说话就能办业务，<br><em>每一步都有据可查。</em></h1>
+      <p class="hero-lead">转账、账单、理财、卡片与订阅，一句话交给 AI 管家。系统把自然语言拆成可执行的任务图，按五档权限决定自动执行、确认、复述、多因子验证或转人工；余额与回执只由工具结果渲染，全程写入哈希链审计。</p>
+      <div class="hero-actions">
+        <a class="btn btn-gold" href="https://github.com/demo234kun/ai-bank-butler" target="_blank" rel="noopener">
+          阅读源码
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/security-self-assessment.md" target="_blank" rel="noopener">
+          安全自评报告
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 2h5l3 3v9H4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M9 2v3h3" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+      <div class="hero-facts">
+        <div class="fact"><b>18</b><span>业务模板</span></div>
+        <div class="fact"><b>5</b><span>权限档位</span></div>
+        <div class="fact"><b>14</b><span>风险信号</span></div>
+        <div class="fact"><b>123</b><span>测试用例</span></div>
+      </div>
+    </div>
+    <div class="hero-visual">
+      <div class="phone">
+        <img src="assets/home.png" width="780" height="1688" alt="AI 银行管家首页：总资产、快捷入口、AI 管家提醒与最近交易" fetchpriority="high">
+      </div>
+      <aside class="hero-card" aria-label="示例对话">
+        <b>示例对话</b>
+        <div class="quote">“给林晚转 520 元，备注爱你”</div>
+        <span class="tier">T1 · 摘要确认</span>
+      </aside>
+      <p class="hero-note">合成数据演示 · PWA 可安装</p>
+    </div>
+  </div>
+</section>
+
+<section class="section flow">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div>
+        <p class="label">Execution Chain</p>
+        <h2>一句话，拆成一条<br>可审计的执行链。</h2>
+      </div>
+      <p>大模型负责理解，不负责放行。意图、规划、授权、执行四层分工，任何一层都不单独决定资金动作。</p>
+    </div>
+    <div class="flow-grid">
+      <article class="flow-step reveal">
+        <span class="no">01 / 理解</span>
+        <h3>意图与槽位</h3>
+        <p>LLM 输出结构化意图，规则引擎与 Zod 快照校验兜底；置信度不足时先澄清，不猜测收款人。</p>
+        <span class="tag">JSON 模式 · 8s 超时</span>
+      </article>
+      <article class="flow-step reveal">
+        <span class="no">02 / 规划</span>
+        <h3>模板实例化为 DAG</h3>
+        <p>18 个业务模板生成有向无环图，按拓扑序执行，支持暂停、重试、补偿与计划任务。</p>
+        <span class="tag">18 模板 · 拓扑执行</span>
+      </article>
+      <article class="flow-step reveal">
+        <span class="no">03 / 授权</span>
+        <h3>风险打分与权限融合</h3>
+        <p>风控智能体输出 0–100 分，与静态档位取较高者；确认摘要绑定参数，授权 90 秒内单次有效。</p>
+        <span class="tag">finalTier = max(静态, 风控)</span>
+      </article>
+      <article class="flow-step reveal">
+        <span class="no">04 / 交付</span>
+        <h3>工具结果渲染</h3>
+        <p>余额、流水、回执只读工具返回值；数字一致性守卫拦截证据外金额，条目写入哈希链。</p>
+        <span class="tag">事实锁定 · 可回放</span>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section scenarios" id="product">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div>
+        <p class="label">Scenarios</p>
+        <h2>六个场景，<br>共享同一套安全内核。</h2>
+      </div>
+      <p>每个场景都有明确的工具边界与可逆语义。批量任务一次确认，每个节点仍独立签发授权。</p>
+    </div>
+    <div class="scene-grid">
+      <article class="scene reveal">
+        <svg class="icon" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 12h22M9 7l-4 5 4 5M23 20l4 5-4 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <h3>智能转账</h3>
+        <p>按姓名、手机号或备注转账；同名联系人先澄清，新收款人要求复述姓名，支持定时转账与 AA 收款。</p>
+        <code>“给林晚转 520 元，备注爱你”</code>
+      </article>
+      <article class="scene reveal">
+        <svg class="icon" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M6 25V13M13 25V7M20 25v-8M27 25V10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M4 27h24" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        <h3>账单分析</h3>
+        <p>月 / 年账单、分类聚合、上期对比、异常交易与重复扣费；金额与分类全部来自流水工具。</p>
+        <code>“这个月花了多少？有异常消费吗”</code>
+      </article>
+      <article class="scene reveal">
+        <svg class="icon" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 24 13 16l5 5 9-11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 10h5v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 28h24" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        <h3>理财操作</h3>
+        <p>读取风险测评与产品匹配结果，展示持仓和收益；申购、赎回进入 T3 多因子验证。</p>
+        <code>“把活期里的 2 万申购稳健理财”</code>
+      </article>
+      <article class="scene reveal">
+        <svg class="icon" viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="4" y="8" width="24" height="16" rx="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4 13h24M9 19h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <h3>卡片管理</h3>
+        <p>卡片与额度总览、虚拟卡申请、调额、冻结与解冻；挂失、解挂必须人脸加短信。</p>
+        <code>“卡片丢了，先挂失”</code>
+      </article>
+      <article class="scene reveal">
+        <svg class="icon" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M24 12a6 6 0 0 0-10.4-4.1L7 14.4V26h8v-5h4v5h5V18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M25 7v6h-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/></svg>
+        <h3>订阅代扣</h3>
+        <p>识别自动续费、涨价与重复扣费，列明代扣方与周期，一键取消并保留恢复入口。</p>
+        <code>“把不用的订阅都取消”</code>
+      </article>
+      <article class="scene reveal">
+        <svg class="icon" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M16 27s-9-5.6-9-12a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 6.4-9 12-9 12Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <h3>生日联动</h3>
+        <p>从一句“我爱人下周生日”拆出预算锁定、鲜花蛋糕预约与日程写入，一次确认批量执行。</p>
+        <code>“我爱人下周生日，帮我提前安排”</code>
+      </article>
+    </div>
+    <div class="shots">
+      <figure class="shot reveal">
+        <img src="assets/chat.png" width="780" height="1688" alt="AI 管家对话界面，展示转账确认卡片" loading="lazy">
+        <figcaption><span>AI 管家对话</span></figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <img src="assets/activity.png" width="780" height="1688" alt="账单分析界面，展示分类与交易列表" loading="lazy">
+        <figcaption><span>账单分析</span></figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <img src="assets/cards.png" width="780" height="1688" alt="卡片管理界面，展示卡面与额度" loading="lazy">
+        <figcaption><span>卡片与额度</span></figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section security" id="security">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div>
+        <p class="label">Five Tiers</p>
+        <h2>五档权限，<br>按风险逐步加码。</h2>
+      </div>
+      <p>静态档位由工具与金额决定，风控智能体再按 14 类信号打分。两档取高，只升不降；超过产品额度上限才拒绝。</p>
+    </div>
+    <div class="tiers">
+      <article class="tier reveal" style="--c:var(--t0)">
+        <span class="code">T0</span>
+        <h3>自动执行</h3>
+        <span class="en">Auto</span>
+        <p>余额、流水、账单分析、产品与持仓查询。只读且不动资金，确认意图后直接执行。</p>
+        <div class="req"><span>AUTO</span></div>
+      </article>
+      <article class="tier reveal" style="--c:var(--t1)">
+        <span class="code">T1</span>
+        <h3>摘要确认</h3>
+        <span class="en">Summary</span>
+        <p>不超过 ¥1,000 的转账、订阅取消、小额调额等黄色操作。展示完整参数，一次确认。</p>
+        <div class="req"><span>摘要</span><span>90s 单次授权</span></div>
+      </article>
+      <article class="tier reveal" style="--c:var(--t2)">
+        <span class="code">T2</span>
+        <h3>收款人复述</h3>
+        <span class="en">Payee echo</span>
+        <p>在摘要之上手输收款人姓名，规范化后比对。防止改名联系人、注入话术与选错同名对象。</p>
+        <div class="req"><span>摘要</span><span>姓名复述</span></div>
+      </article>
+      <article class="tier reveal" style="--c:var(--t3)">
+        <span class="code">T3</span>
+        <h3>多因子验证</h3>
+        <span class="en">Step-up</span>
+        <p>人脸或本机生物识别；单笔超过 ¥5,000、挂失与解挂再加短信。挑战与操作摘要绑定。</p>
+        <div class="req"><span>摘要</span><span>复述</span><span>人脸</span><span>短信</span></div>
+      </article>
+      <article class="tier reveal" style="--c:var(--t4)">
+        <span class="code">T4</span>
+        <h3>人工审核</h3>
+        <span class="en">Review</span>
+        <p>单笔超过 ¥5 万进入审核队列，延迟 10 分钟到账，期内可撤销；拒绝或超时自动退回。</p>
+        <div class="req"><span>延迟到账</span><span>可撤销</span><span>人工复核</span></div>
+      </article>
+    </div>
+    <div class="fuse reveal">
+      <div><b>risk-agent-v1</b>金额占比、行为基线、收款人新异性、深夜、频次、拆分规避、会话风险、注入嫌疑、低置信度、风险名单、诈骗话术、收款人替换、额度余量等 14 类信号加权。</div>
+      <div><b>finalTier = max(静态档, 风控档)</b>分数段 35 / 60 / 85 映射到 T2 / T3 / T4。风控只读账本与会话事实，模型不参与打分。</div>
+      <div><b>一单一授权</b>digest 覆盖用户、会话、节点、工具与规范化参数；执行前重算，改单返回 DIGEST_MISMATCH，重放返回 GRANT_ALREADY_USED。</div>
+    </div>
+    <p class="dark-note reveal"><strong>拒绝边界：</strong>单笔超过 ¥200,000 或当日累计超过 ¥500,000 才硬阻断；5 万元以上进入人工审核，不再一刀切禁止。</p>
+
+    <div class="invariants">
+      <div class="inv reveal"><b>事实锁定</b><p>LLM 只输出意图与槽位，余额与回执由工具结果模板渲染；数字守卫拦截证据外金额。</p></div>
+      <div class="inv reveal"><b>注入三层防御</b><p>输入规则、模型嫌疑信号、服务端工具白名单与策略彼此独立；连续命中触发熔断。</p></div>
+      <div class="inv reveal"><b>哈希链审计</b><p>append-only JSONL，逐条链接 userId、类型、摘要与载荷哈希；每 50 条写入 checkpoint。</p></div>
+      <div class="inv reveal"><b>并发额度台账</b><p>used = COMMITTED + HELD，预留 120 秒过期；用户锁串行化，避免并发双花。</p></div>
+      <div class="inv reveal"><b>熔断与接管</b><p>3 次工具失败或 2 次注入命中锁定 10 分钟；支持中断、接管、恢复、终止与逆序回退。</p></div>
+      <div class="inv reveal"><b>受限沙箱</b><p>worker + vm，无文件、网络与进程访问；800ms 软超时、2.2s 硬终止，静态检查越界调用。</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section arch" id="architecture">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div>
+        <p class="label">Architecture</p>
+        <h2>理解、安全、工具、客户端，<br>四层解耦。</h2>
+      </div>
+      <p>Agent 运行时只做编排；资金动作必须经过权限引擎、一次性授权与工具层。银行核心可切换本地合成或签名 HTTP 接入。</p>
+    </div>
+    <div class="map reveal" role="group" aria-label="系统组件图">
+      <div class="map-col">
+        <h4><b>客户端</b><span>01</span></h4>
+        <div class="node dark">手机 PWA<small>首页 / 对话 / 账单 / 卡片 / 我的</small></div>
+        <div class="node">/console 评委模式<small>DAG · 策略理由 · 审计 · 攻防实验室</small></div>
+        <div class="node">认证与会话<small>签名 HttpOnly Cookie · 按 userId 隔离</small></div>
+        <div class="node">PWA 离线壳<small>Service Worker 仅缓存静态资源</small></div>
+      </div>
+      <div class="map-col">
+        <h4><b>Agent 运行时</b><span>02</span></h4>
+        <div class="node accent">意图理解<small>DeepSeek + 规则引擎 + Zod 校验</small></div>
+        <div class="node">18 个业务模板<small>六场景 · 模板匹配与参数槽位</small></div>
+        <div class="node">DAG 规划<small>拓扑序 · 依赖检查 · 批量节点</small></div>
+        <div class="node">拓扑执行<small>暂停 / 重试 / 补偿 / 计划任务</small></div>
+        <div class="node">事实渲染<small>工具结果模板 · 数字一致性守卫</small></div>
+      </div>
+      <div class="map-col">
+        <h4><b>安全内核</b><span>03</span></h4>
+        <div class="node gold">五档权限引擎<small>T0–T4 · finalTier 取较高档</small></div>
+        <div class="node">风控智能体<small>14 类信号 · 0–100 分 · 随决策入链</small></div>
+        <div class="node">PolicyGrant<small>digest 绑定 · 90 秒 · 单次消费</small></div>
+        <div class="node">复核与额度台账<small>T4 延迟 10 分钟 · 预留-提交</small></div>
+        <div class="node">审计哈希链<small>append-only · 每 50 条 checkpoint</small></div>
+      </div>
+      <div class="map-col">
+        <h4><b>工具与核心</b><span>04</span></h4>
+        <div class="node">白名单工具<small>转账 / 账单 / 理财 / 卡片 / 订阅 / 生日</small></div>
+        <div class="node">BankingGateway<small>simulated · HMAC 签名 HTTP</small></div>
+        <div class="node dark">外部系统<small>银行核心 · 短信 / 人脸 Provider</small></div>
+        <div class="node">worker + vm 沙箱<small>无 IO · 800ms 软超时 · 2.2s 硬终止</small></div>
+      </div>
+    </div>
+    <div class="map-foot reveal">
+      <span><b>状态：</b>多用户 JSON 存储，生产替换 Postgres / Redis</span>
+      <span><b>接入：</b>HTTP 模式失败即关闭，不回退合成数据</span>
+    </div>
+    <div class="arch-caption reveal">
+      <span>完整架构图包含 Agent 运行时、安全内核、工具层与客户端的全部连线。</span>
+      <a href="assets/architecture.png" target="_blank" rel="noopener">查看完整架构图 ↗</a>
+    </div>
+    <div class="layers">
+      <article class="layer reveal" style="--l:var(--t1)">
+        <span>PRINCIPLE 01</span>
+        <h3>模型只管理解</h3>
+        <p>LLM 输出意图与槽位，不直接调用工具；规则引擎、置信度与 Zod 校验负责兜底。</p>
+      </article>
+      <article class="layer reveal" style="--l:var(--t2)">
+        <span>PRINCIPLE 02</span>
+        <h3>授权先于执行</h3>
+        <p>资金动作先过策略、摘要、一次性授权；提示词无法绕过服务端工具白名单与额度台账。</p>
+      </article>
+      <article class="layer reveal" style="--l:var(--t3)">
+        <span>PRINCIPLE 03</span>
+        <h3>失败显式关闭</h3>
+        <p>HTTP 银行接入失败直接报错，不回退合成数据；LLM 不可用时切换到规则引擎并标注来源。</p>
+      </article>
+      <article class="layer reveal" style="--l:var(--t4)">
+        <span>PRINCIPLE 04</span>
+        <h3>证据可回放</h3>
+        <p>每次运行有 runId，审计条目按用户隔离；可按 run 重建意图、策略、授权与工具结果。</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section evidence" id="evidence">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div>
+        <p class="label">Verification</p>
+        <h2>用可重复的运行结果<br>说明它真的能跑。</h2>
+      </div>
+      <p>单元测试、独立冒烟、HTTP 接入回归与浏览器巡检分开记录；数字来自仓库内可执行脚本。</p>
+    </div>
+    <div class="metrics">
+      <div class="metric reveal"><b>123</b><span>Vitest 用例</span><small>10 个测试文件</small></div>
+      <div class="metric reveal"><b>264</b><span>审计条目逐条校验</span><small>离线冒烟通过</small></div>
+      <div class="metric reveal"><b>33</b><span>浏览器交互检查</span><small>headless Chrome + CDP</small></div>
+      <div class="metric reveal"><b>18</b><span>业务模板</span><small>覆盖六个场景</small></div>
+    </div>
+    <div class="evidence-grid">
+      <div class="reveal">
+        <table class="table">
+          <thead><tr><th scope="col">测试文件</th><th scope="col">覆盖内容</th></tr></thead>
+          <tbody>
+            <tr><td>policy</td><td>五档分层、当日累计、额度上限与拒绝边界</td></tr>
+            <tr><td>risk</td><td>风控智能体评分、档位映射与静态档融合</td></tr>
+            <tr><td>safeguards</td><td>收款人复述、人工审核入队与批准 / 拒绝</td></tr>
+            <tr><td>ledger</td><td>预留-提交台账、并发与过期回收</td></tr>
+            <tr><td>audit</td><td>哈希链完整性、篡改检测与 checkpoint</td></tr>
+            <tr><td>nlu</td><td>意图与槽位解析、注入话术拦截</td></tr>
+            <tr><td>planner</td><td>DAG 规划、依赖排序与模板选择</td></tr>
+            <tr><td>templates</td><td>18 个模板注册与匹配优先级</td></tr>
+            <tr><td>integration</td><td>银行 HTTP 签名、幂等、重试与快照校验</td></tr>
+            <tr><td>dispute</td><td>交易争议工单、状态流转与 180 天窗口</td></tr>
+          </tbody>
+        </table>
+        <p class="evidence-note">完整结果与已知风险见 <a href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/security-self-assessment.md" target="_blank" rel="noopener">安全自评报告 v1.0</a>，最近一次自查日期 2026-11-02。</p>
+      </div>
+      <div class="reveal">
+        <p class="cmd-title">Reproduce</p>
+        <pre class="cmd"><code><span class="c"># 单元测试</span>
+<span class="g">npm test</span>
+
+<span class="c"># 独立临时服务 + 离线规则</span>
+<span class="g">npm run smoke</span>
+
+<span class="c"># 银行 / 短信 / 人脸全走 HTTP Provider</span>
+<span class="g">npm run smoke:full</span>
+
+<span class="c"># 生产构建 + 浏览器交互回归</span>
+<span class="g">node tools/qa-product.mjs</span></code></pre>
+        <p class="evidence-note">冒烟测试使用临时数据目录与合成账户，不接触真实银行或真实客户数据。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section docs" id="docs">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div>
+        <p class="label">Documentation</p>
+        <h2>从产品说明到<br>银行接入契约。</h2>
+      </div>
+      <p>文档与代码同仓维护。设计判断、未完成边界和风险清单都写在明面上。</p>
+    </div>
+    <div class="doc-grid">
+      <a class="doc reveal" href="https://github.com/demo234kun/ai-bank-butler/blob/main/README.md" target="_blank" rel="noopener">
+        <span class="k">README</span>
+        <h3>项目说明</h3>
+        <p>产品形态、五档权限、快速开始、环境变量、脚本与已知边界。</p>
+        <span class="more">打开文档 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </a>
+      <a class="doc reveal" href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/architecture.md" target="_blank" rel="noopener">
+        <span class="k">ARCHITECTURE</span>
+        <h3>系统架构与核心算法</h3>
+        <p>Agent 运行时、DAG 规划、权限融合、审计与沙箱的完整设计。</p>
+        <span class="more">打开文档 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </a>
+      <a class="doc reveal" href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/security-self-assessment.md" target="_blank" rel="noopener">
+        <span class="k">SECURITY</span>
+        <h3>安全自评报告</h3>
+        <p>威胁模型、14 条安全不变量、五档矩阵与 20 条已知风险。</p>
+        <span class="more">打开文档 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </a>
+      <a class="doc reveal" href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/banking-integration.md" target="_blank" rel="noopener">
+        <span class="k">INTEGRATION</span>
+        <h3>银行核心接入说明</h3>
+        <p>HMAC 签名、幂等键、快照校验、Provider 契约与上线清单。</p>
+        <span class="more">打开文档 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </a>
+      <a class="doc reveal" href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/demo-script.md" target="_blank" rel="noopener">
+        <span class="k">DEMO</span>
+        <h3>5 分钟演示脚本</h3>
+        <p>从登录到强验证转账、生日联动与控制台核查的完整路径。</p>
+        <span class="more">打开文档 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </a>
+      <a class="doc reveal" href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/api.md" target="_blank" rel="noopener">
+        <span class="k">API</span>
+        <h3>API 与 SSE 契约</h3>
+        <p>聊天流、确认、强验证、审核与控制台接口的请求响应定义。</p>
+        <span class="more">打开文档 <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section limits" id="limits">
+  <div class="wrap">
+    <div class="limit-box reveal">
+      <div>
+        <p class="label" style="font-size:11.5px;letter-spacing:.22em;color:var(--t3);text-transform:uppercase;display:flex;align-items:center;gap:10px;margin:0 0 14px"><span style="width:18px;height:1px;background:var(--t3);display:inline-block"></span>Known Limits</p>
+        <h2>这是可运行的原型，<br>不是生产银行。</h2>
+        <p class="intro">默认运行在合成数据与演示核验通道上；真实资金、正式客户与行方系统均未接入。以下边界来自开发期自查，提交评审时不作隐藏。</p>
+        <a class="limit-link" href="https://github.com/demo234kun/ai-bank-butler/blob/main/docs/security-self-assessment.md" target="_blank" rel="noopener">阅读完整风险清单（20 条） ↗</a>
+      </div>
+      <ol class="limit-list">
+        <li><b>核验通道默认演示。</b>人脸为页面动画或本机 WebAuthn，短信使用演示下发；配置 HTTP Provider 后才以合作方服务端结果为准。</li>
+        <li><b>状态为单机实现。</b>多用户数据与额度台账存于 JSON 文件，重启丢失进行中会话；多实例需 Postgres / Redis 与分布式锁。</li>
+        <li><b>审计链无外部锚定。</b>哈希链能发现内容篡改，文件仍可被整体删除；无 WORM、KMS 签名与集中日志。</li>
+        <li><b>行方联调尚未完成。</b>已交付签名契约与联调桩，客户绑定、mTLS、异步对账与历史流水分页需生产环境补齐。</li>
+        <li><b>人工审核缺少职责分离。</b>T4 入队前跳过摘要与多因子，批准后未回写额度台账；生产需双人复核与独立审核角色。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-top">
+      <div>
+        <a class="brand" href="#top" aria-label="返回顶部">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="none" stroke="#d9b878" stroke-width="2"/><path d="M20 44 32 20l12 24" fill="none" stroke="#d9b878" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M25 37h14" stroke="#d9b878" stroke-width="3.2" stroke-linecap="round"/></svg>
+          <span class="brand-text"><b>AI 银行管家</b><span class="brand-sub">AI BANK BUTLER</span></span>
+        </a>
+        <p>比赛用产品原型。全部账户、流水、联系人与持仓为合成数据，不构成真实金融服务、投资建议或合规结论。</p>
+      </div>
+      <nav class="footer-links" aria-label="页脚导航">
+        <a href="#product">产品场景</a>
+        <a href="#security">五档权限</a>
+        <a href="#architecture">系统架构</a>
+        <a href="#evidence">验证证据</a>
+        <a href="#docs">文档</a>
+        <a href="https://github.com/demo234kun/ai-bank-butler" target="_blank" rel="noopener">GitHub ↗</a>
+      </nav>
+    </div>
+    <div class="footer-bottom">
+      <span>© 2026 AI 银行管家 · 开发期原型</span>
+      <span>合成数据 · 演示核验 · 按设计留痕</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var toggle=document.querySelector('.nav-toggle');
+  var links=document.getElementById('nav-links');
+  if(toggle&&links){
+    toggle.addEventListener('click',function(){
+      var open=links.classList.toggle('open');
+      toggle.setAttribute('aria-expanded',open?'true':'false');
+      toggle.setAttribute('aria-label',open?'关闭导航':'打开导航');
+    });
+    links.addEventListener('click',function(e){
+      if(e.target.closest('a')){links.classList.remove('open');toggle.setAttribute('aria-expanded','false');}
+    });
+  }
+  var items=document.querySelectorAll('.reveal');
+  if(!('IntersectionObserver' in window)||window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+    items.forEach(function(el){el.classList.add('in');});
+    return;
+  }
+  var io=new IntersectionObserver(function(entries){
+    entries.forEach(function(entry){
+      if(entry.isIntersecting){entry.target.classList.add('in');io.unobserve(entry.target);}
+    });
+  },{rootMargin:'0px 0px -8% 0px',threshold:.08});
+  items.forEach(function(el){io.observe(el);});
+})();
+</script>
+</body>
+</html>

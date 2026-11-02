@@ -95,10 +95,29 @@ describe('权限分级引擎', () => {
     expect(policy.effectiveRisk).toBe('RED');
   });
 
-  it('单笔超过 5 万硬阻断', () => {
+  it('单笔超过 5 万不再一刀切禁止，转人工审核队列', () => {
     const policy = evaluateNode(state, transferNode(5_000_001));
+    expect(policy.decision).toBe('REVIEW');
+    expect(policy.tier).toBe('T4');
+    expect(policy.controls).toContain('MANUAL_REVIEW');
+  });
+
+  it('超出产品单笔上限才拒绝', () => {
+    const policy = evaluateNode(state, transferNode(20_000_001));
     expect(policy.decision).toBe('DENY');
-    expect(policy.reasons.some((r) => r.code === 'HARD_LIMIT')).toBe(true);
+    expect(policy.reasons.some((r) => r.code === 'PRODUCT_CEILING')).toBe(true);
+  });
+
+  it('档位由静态档与风控档共同决定，并在解释里给出来源', () => {
+    const policy = evaluateNode(state, transferNode(50_000));
+    expect(policy.tierSource).toBeDefined();
+    expect(policy.tier).toBe(
+      ['T0', 'T1', 'T2', 'T3', 'T4'].indexOf(policy.tierSource!.agent) >
+        ['T0', 'T1', 'T2', 'T3', 'T4'].indexOf(policy.tierSource!.amount)
+        ? policy.tierSource!.agent
+        : policy.tierSource!.amount,
+    );
+    expect(policy.explanation).toContain(policy.tier!);
   });
 
   it('6000 元红色转账需要双因子', () => {

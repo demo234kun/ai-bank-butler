@@ -24,6 +24,9 @@ import {
 import { audit } from '../security/auditChain';
 import { assertAndConsumeGrant, operationDigest } from '../policy/grant';
 import { createStepUpChallenge, toPublicChallenge } from '../policy/stepup';
+import { deferToManualReview, nodePayee, payeeEchoFor } from '../policy/safeguards';
+import type { RiskCallContext } from '../policy/riskAgent';
+import { MANUAL_REVIEW_WINDOW_MS } from '@bank/shared';
 import { banking } from '../integration/banking';
 import { toolHandler, usesBankData } from '../tools/registry';
 import { buildPendingSummary, combineBatchSummary } from './summary';
@@ -55,6 +58,24 @@ function nodeDigest(session: SessionInternal, runId: string, node: DagNode): str
 
 function batchDigest(digests: string[]): string {
   return createHash('sha256').update(digests.join('|')).digest('hex');
+}
+
+/** 风控智能体需要的会话侧事实：模型置信度、注入嫌疑、收款人是否刚被替换。 */
+function riskContextFor(session: SessionInternal, node: DagNode): RiskCallContext {
+  const nlu = session.lastNlu;
+  const payee = nodePayee(node);
+  const utterance = nlu?.utterance ?? '';
+  const replaced = Boolean(
+    payee &&
+      session.context.lastPayee &&
+      payee !== session.context.lastPayee &&
+      /换|改成|改为|另一个/.test(utterance),
+  );
+  return {
+    nluConfidence: nlu?.confidence,
+    injectionSuspicion: nlu?.injectionSuspicion,
+    payeeJustChanged: replaced,
+  };
 }
 
 function emitNode(emit: EmitFn, runId: string, node: DagNode, extra: Record<string, unknown> = {}) {
@@ -108,6 +129,7 @@ export function preparePending(
       summary: buildPendingSummary(bank, node, policy),
       challenge: toPublicChallenge(challenge),
       batchNodeIds: [node.id],
+      payeeEcho: payeeEchoFor(node, policy),
     };
   }
 
@@ -118,7 +140,7 @@ export function preparePending(
   const batch = [node];
   for (const candidate of dag.nodes.slice(index + 1)) {
     if (candidate.status !== 'PENDING') continue;
-    const candidatePolicy = evaluateNode(bank, candidate);
+    const candidatePolicy = evaluateNode(bank, candidate, riskContextFor(session, candidate));
     if (candidatePolicy.decision === 'CONFIRM' && candidatePolicy.effectiveRisk === 'YELLOW') {
       policies.set(candidate.id, candidatePolicy);
       batch.push(candidate);
@@ -135,6 +157,7 @@ export function preparePending(
     policy,
     summary,
     batchNodeIds: batch.map((n) => n.id),
+    payeeEcho: payeeEchoFor(node, policy),
   };
 }
 
@@ -270,7 +293,7 @@ export async function executeDag(session: SessionInternal, emit: EmitFn): Promis
       }
     }
 
-    const policy = evaluateNode(live, node);
+    const policy = evaluateNode(live, node, riskContextFor(session, node));
     node.policy = policy;
     node.risk = policy.effectiveRisk;
     emit(
@@ -354,6 +377,29 @@ export async function executeDag(session: SessionInternal, emit: EmitFn): Promis
         { nodeId: node.id, grantId: grantId.slice(0, 12) },
         { sessionId: session.id, runId },
       );
+    }
+
+    // T4：资金交易不直接执行，转入人工审核队列，审核通过后由审核接口执行
+    if (policy.decision === 'REVIEW' && node.tool === 'transfer') {
+      const review = await deferToManualReview({
+        userId: session.userId,
+        node,
+        policy,
+        runId,
+      });
+      node.status = 'SUCCESS';
+      node.startedAt = node.startedAt ?? clock.nowIso();
+      node.finishedAt = clock.nowIso();
+      node.result = {
+        ok: true,
+        data: { review, deferredToReview: true },
+        evidence: [review.id],
+        summary: `已受理并转入人工审核（${review.id}），审核通过后自动执行；${Math.round(
+          MANUAL_REVIEW_WINDOW_MS / 60_000,
+        )} 分钟内可撤销`,
+      };
+      emitNode(emit, runId, node, { deferredToReview: true, reviewId: review.id });
+      continue;
     }
 
     // 幂等：同一节点、同一参数只可能成功一次

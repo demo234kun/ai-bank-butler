@@ -32,6 +32,7 @@ const KIND_ICON = {
   note: Bell,
   risk: AlertTriangle,
   dispute: AlertTriangle,
+  review: AlertTriangle,
   system: Bell,
 } as const;
 

@@ -100,18 +100,59 @@ function normalizeQuery(value: unknown, text: string): NluSlots['query'] {
   const v = String(value ?? '').toLowerCase();
   if (['transactions', 'records', '流水'].includes(v)) return 'transactions';
   if (['balance', '余额'].includes(v)) return 'balance';
+  if (['schedules', 'plans', '计划'].includes(v)) return 'schedules';
+  if (['cancel_schedule', 'cancelschedule'].includes(v)) return 'cancel_schedule';
+  if (/取消|撤销|停掉/.test(text) && /计划|定时|预约|待办/.test(text)) return 'cancel_schedule';
+  if (/计划|待办|定时任务|安排|到点/.test(text)) return 'schedules';
   if (/余额|多少钱|资产|存款/.test(text)) return 'balance';
   if (/流水|交易记录|明细/.test(text)) return 'transactions';
   return null;
+}
+
+function normalizeTxnAction(value: unknown, text: string): NluSlots['txnAction'] {
+  const v = String(value ?? '').toLowerCase();
+  if (['detail', 'details', '详情'].includes(v)) return 'detail';
+  if (['dispute', 'chargeback', '申诉', '拒付'].includes(v)) return 'dispute';
+  if (/申诉|拒付|争议|不是本人|没收到|未收到|重复扣|乱扣|退这笔/.test(text)) return 'dispute';
+  if (/这笔|哪笔|详情|明细|怎么扣的|什么时间|付款方式/.test(text)) return 'detail';
+  return null;
+}
+
+function normalizeDisputeReason(value: unknown, text: string): NluSlots['disputeReason'] {
+  const v = String(value ?? '').toLowerCase();
+  const known = ['duplicate', 'unauthorized', 'not_received', 'amount_wrong', 'other'];
+  if (known.includes(v)) return v as NluSlots['disputeReason'];
+  if (/重复|两笔|又扣/.test(text)) return 'duplicate';
+  if (/不是本人|没签|盗|冒用| unauthorized/.test(text)) return 'unauthorized';
+  if (/没收到|未收到|没到货|服务没/.test(text)) return 'not_received';
+  if (/金额不对|多收|少退|价格不符/.test(text)) return 'amount_wrong';
+  return null;
+}
+
+function normalizeTxnHint(value: unknown, text: string): NluSlots['txnHint'] {
+  const direct = asString(value);
+  if (direct) return direct.slice(0, 24);
+  const merchant = text.match(/(?:星巴克|瑞幸|manner|滴滴|地铁|移动|联通|电信|山姆|京东|淘宝|美团|饿了么|盒马|网易云|爱奇艺|腾讯视频|keep|大麦|影院|酒吧|齿科)[^，。？]*/i);
+  if (merchant) return merchant[0].slice(0, 24);
+  return null;
+}
+
+function normalizeScheduleHint(value: unknown, text: string): NluSlots['scheduleHint'] {
+  const direct = asString(value);
+  if (direct) return direct.slice(0, 24);
+  const match = text.match(/(?:房租|房贷|话费|会员|订阅|工资|转账|鲜花|蛋糕|生日|还款)/);
+  return match ? match[0] : null;
 }
 
 function normalizeWealthAction(value: unknown, text: string): NluSlots['wealthAction'] {
   const v = String(value ?? '').toLowerCase();
   if (['purchase', 'buy', '申购'].includes(v)) return 'purchase';
   if (['redeem', 'sell', '赎回'].includes(v)) return 'redeem';
+  if (['holdings', 'position', '持仓'].includes(v)) return 'holdings';
   if (['query', 'recommend', '推荐'].includes(v)) return 'query';
   if (/赎回|卖出|取回/.test(text)) return 'redeem';
   if (/申购|买入|下单|买/.test(text)) return 'purchase';
+  if (/持仓|浮盈|浮亏|赚了多?少|收益如何|我买的理财|买过的理财/.test(text)) return 'holdings';
   return 'query';
 }
 
@@ -170,6 +211,10 @@ export function parseNluContent(content: string, input: { text: string; source: 
       : null,
     splitTotal: asNumber(slotsRaw.splitTotal) ?? null,
     wealthAction: normalizeWealthAction(slotsRaw.wealthAction, text),
+    txnAction: normalizeTxnAction(slotsRaw.txnAction, text),
+    txnHint: normalizeTxnHint(slotsRaw.txnHint, text),
+    disputeReason: normalizeDisputeReason(slotsRaw.disputeReason, text),
+    scheduleHint: normalizeScheduleHint(slotsRaw.scheduleHint, text),
   };
 
   // 按意图清理无关槽位，避免控制台与提示词上下文被“空槽位噪声”污染
@@ -266,5 +311,9 @@ export function emptySlots(): NluSlots {
     splitNames: null,
     splitTotal: null,
     wealthAction: null,
+    txnAction: null,
+    txnHint: null,
+    disputeReason: null,
+    scheduleHint: null,
   };
 }

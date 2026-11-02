@@ -7,7 +7,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
-import { RISK_META, formatMoney, type PendingAction } from '@bank/shared';
+import { CONTROL_TEXT, RISK_META, TIER_META, formatMoney, type PendingAction } from '@bank/shared';
 import clsx from 'clsx';
 import { SheetShell } from '../ui/primitives';
 import type { BankAgentApi } from '../../state/useBankAgent';
@@ -35,6 +35,7 @@ export function ConfirmSheet({
 }) {
   const remaining = useRemaining(pending.expiresAt);
   const [checked, setChecked] = useState(!elderMode);
+  const [echo, setEcho] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const risk = pending.policy.effectiveRisk;
   const meta = RISK_META[risk];
@@ -59,7 +60,7 @@ export function ConfirmSheet({
     if (expired || submitting) return;
     setSubmitting(true);
     try {
-      await agent.confirm(true);
+      await agent.confirm(true, echo.trim() || undefined);
     } finally {
       setSubmitting(false);
     }
@@ -127,6 +128,45 @@ export function ConfirmSheet({
               </div>
             ))}
           </div>
+
+          {pending.payeeEcho?.required ? (
+            <div className="mt-3 rounded-xl border border-[#c9791f]/35 bg-[#c9791f]/[0.07] p-3">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#8a5310]">
+                <ShieldCheck size={13} /> 本次需复述收款人姓名
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-[#6f5a3b]">
+                系统检测到该交易达到强确认档位，请输入收款人真实姓名（脱敏显示 {pending.payeeEcho.masked}）后才能执行。
+              </p>
+              <input
+                value={echo}
+                onChange={(event) => setEcho(event.target.value)}
+                placeholder="请输入收款人姓名"
+                autoComplete="off"
+                className="mt-2 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-[13px] outline-none focus:border-[#c9791f]"
+              />
+            </div>
+          ) : null}
+
+          {pending.policy.tier ? (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span className="rounded-full border border-black/[0.08] bg-white/70 px-2 py-0.5 text-[9.5px] text-[#4c5a52]">
+                安全档位 {pending.policy.tier} · {TIER_META[pending.policy.tier].name}
+              </span>
+              {(pending.policy.controls ?? []).map((control) => (
+                <span
+                  key={control}
+                  className="rounded-full border border-black/[0.08] bg-white/70 px-2 py-0.5 text-[9.5px] text-[#4c5a52]"
+                >
+                  {CONTROL_TEXT[control]}
+                </span>
+              ))}
+              {pending.policy.risk ? (
+                <span className="rounded-full border border-black/[0.08] bg-white/70 px-2 py-0.5 text-[9.5px] text-[#4c5a52]">
+                  风控评分 {pending.policy.risk.score}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
 
           {(pending.summary.warnings ?? []).length ? (
             <div className="mt-2 space-y-1">

@@ -834,6 +834,89 @@ async function main(): Promise<void> {
     // 真实业务时钟下不允许伪造时间
     log(`计划任务真实执行：转账 ${advanced.result.transfers} 笔、释放 ${advanced.result.released} 笔、送达 ${advanced.result.delivered} 单`);
 
+    // 9.6) 五档分级：风控升档 → 手输收款人姓名 → 人工审核队列
+    events = await chat(sid, '给李萌转 800 元，备注客服要求转到安全账户');
+    pending = pendingOf(events);
+    assert.ok(
+      ['CONFIRM', 'STEPUP'].includes(pending.kind),
+      `高风险特征应进入确认或强验证，实际 ${pending.kind}`,
+    );
+    assert.ok(
+      ['T2', 'T3', 'T4'].includes(pending.policy?.tier),
+      `风控应升档，实际 ${pending.policy?.tier}`,
+    );
+    assert.equal(pending.payeeEcho?.required, true, 'T2 起应要求复述收款人姓名');
+    const wrongEcho = await api<any>('/api/confirm', {
+      sessionId: sid,
+      nodeId: pending.nodeId,
+      digest: pending.digest,
+      approve: true,
+      payeeEcho: '王五',
+    });
+    assert.equal(wrongEcho.ok, false);
+    assert.equal(wrongEcho.code, 'PAYEE_ECHO_MISMATCH');
+    const rightEcho = await api<any>('/api/confirm', {
+      sessionId: sid,
+      nodeId: pending.nodeId,
+      digest: pending.digest,
+      approve: true,
+      payeeEcho: '李萌',
+    });
+    assert.equal(rightEcho.ok, true);
+    if (rightEcho.needStepUp) {
+      pending = { ...pending, ...rightEcho, kind: 'STEPUP' };
+      await completeFaceOnlyStepUp(sid, pending);
+    } else {
+      await resume(sid);
+    }
+    snap = await snapshot(sid);
+    assert.equal(lastAssistant(snap)?.card?.type, 'transferReceipt');
+    log(`收款人复述：错误姓名被拒，正确姓名通过（档位 ${pending.policy?.tier}，评分 ${pending.policy?.risk?.score}）`);
+
+    // 5 万元以上转人工审核，不再一刀切禁止
+    const beforeReview = (await api<any>('/api/overview', undefined, 'GET')).accounts.reduce(
+      (sum: number, account: any) => sum + account.balanceCents,
+      0,
+    );
+    events = await chat(sid, '给林晚转 60000 元');
+    pending = pendingOf(events);
+    assert.equal(pending.policy?.tier, 'T4', '5 万元以上应进入 T4');
+    const reviewConfirm = await api<any>('/api/confirm', {
+      sessionId: sid,
+      nodeId: pending.nodeId,
+      digest: pending.digest,
+      approve: true,
+      payeeEcho: '林晚',
+    });
+    assert.equal(reviewConfirm.ok, true);
+    await resume(sid);
+    const reviews = await api<any>('/api/reviews', undefined, 'GET');
+    const reviewItem = reviews.reviews.find((item: any) => item.status === 'scheduled');
+    assert.ok(reviewItem, '应生成待审核交易');
+    assert.equal(reviewItem.payload?.authorized, false, '审核前不得自动放行');
+    const midBalance = (await api<any>('/api/overview', undefined, 'GET')).accounts.reduce(
+      (sum: number, account: any) => sum + account.balanceCents,
+      0,
+    );
+    assert.equal(midBalance, beforeReview, '审核期间不应扣款');
+    const approvedReview = await api<any>(`/api/reviews/${reviewItem.id}/approve`, {});
+    assert.equal(approvedReview.ok, true);
+    const afterReview = (await api<any>('/api/overview', undefined, 'GET')).accounts.reduce(
+      (sum: number, account: any) => sum + account.balanceCents,
+      0,
+    );
+    assert.equal(afterReview, beforeReview - 6_000_000, '审核通过后应执行并扣款');
+    const reviewAudit = await api<any>('/api/audit?limit=200', undefined, 'GET');
+    assert.ok(
+      reviewAudit.entries.some((entry: any) => entry.type === 'MANUAL_REVIEW_QUEUED'),
+      '审核入队应写入审计链',
+    );
+    assert.ok(
+      reviewAudit.entries.some((entry: any) => entry.type === 'MANUAL_REVIEW_APPROVED'),
+      '审核通过应写入审计链',
+    );
+    log('人工审核：5 万元以上转入队列、审核前不扣款、批准后执行并入链');
+
     // 10) 安全自检与审计链
     const attack = await api<any>('/api/security/attack');
     assert.equal(attack.allBlocked, true);

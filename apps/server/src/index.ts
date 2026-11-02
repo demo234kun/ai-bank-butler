@@ -23,6 +23,7 @@ import { notificationRoutes } from './routes/notifications';
 import { speechRoutes } from './routes/speech';
 import { passkeyRoutes } from './routes/passkey';
 import { integrationRoutes } from './routes/integration';
+import { reviewRoutes } from './routes/review';
 
 async function main(): Promise<void> {
   const configErrors = [...integrationConfigErrors(), ...speechConfigErrors()];
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
   await app.register(speechRoutes);
   await app.register(passkeyRoutes);
   await app.register(integrationRoutes);
+  await app.register(reviewRoutes);
 
   const hasWeb = fs.existsSync(config.webDist) && fs.existsSync(`${config.webDist}/index.html`);
   if (hasWeb) {

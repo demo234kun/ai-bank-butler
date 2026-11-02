@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Dispute } from './dispute';
+import type { RiskTier, RiskVerdict, SecurityControl } from './riskTiers';
 
 export type Risk = 'GREEN' | 'YELLOW' | 'RED';
 
@@ -85,6 +86,11 @@ export type ToolName =
   | 'create_note'
   | 'get_balance'
   | 'list_transactions'
+  | 'list_holdings'
+  | 'get_txn_detail'
+  | 'open_dispute'
+  | 'list_schedules'
+  | 'cancel_schedule'
   // 内部补偿工具（不进入规划器可选工具集）
   | 'reverse_transfer'
   | 'restore_subscription'
@@ -113,12 +119,19 @@ export interface NluSlots {
   subscriptionName?: string | null;
   birthdayDate?: string | null;
   budget?: number | null;
-  query?: 'balance' | 'transactions' | null;
+  query?: 'balance' | 'transactions' | 'schedules' | 'cancel_schedule' | null;
+  /** 账单侧动作：查看单笔详情 / 提交争议申诉 */
+  txnAction?: 'detail' | 'dispute' | null;
+  /** 定位单笔交易的线索：商户名或金额 */
+  txnHint?: string | null;
+  disputeReason?: 'duplicate' | 'unauthorized' | 'not_received' | 'amount_wrong' | 'other' | null;
+  /** 定位计划任务的线索：标题或时间关键字 */
+  scheduleHint?: string | null;
   isScheduled?: boolean | null;
   scheduleDate?: string | null;
   splitNames?: string[] | null;
   splitTotal?: number | null;
-  wealthAction?: 'query' | 'purchase' | 'redeem' | null;
+  wealthAction?: 'query' | 'purchase' | 'redeem' | 'holdings' | null;
   contactId?: string | null;
   subscriptionId?: string | null;
   cardId?: string | null;
@@ -306,7 +319,7 @@ export interface ScheduledTransferPayload {
 
 export interface ScheduleItem {
   id: string;
-  kind: 'transfer' | 'gift' | 'note';
+  kind: 'transfer' | 'gift' | 'note' | 'review';
   title: string;
   amountCents?: number;
   executeAt: string;
@@ -321,7 +334,7 @@ export interface ScheduleItem {
 export interface AppNotification {
   id: string;
   ts: string;
-  kind: 'schedule' | 'budget' | 'gift' | 'note' | 'risk' | 'dispute' | 'system';
+  kind: 'schedule' | 'budget' | 'gift' | 'note' | 'risk' | 'dispute' | 'review' | 'system';
   title: string;
   body: string;
   read: boolean;
@@ -398,7 +411,13 @@ export interface PolicyDecision {
   amountCents?: number;
   limit: LimitSummary;
   explanation: string;
-  decision: 'ALLOW' | 'CONFIRM' | 'STEPUP' | 'DENY';
+  decision: 'ALLOW' | 'CONFIRM' | 'STEPUP' | 'DENY' | 'REVIEW';
+  /** 五档安全级别：静态档由金额与操作类型决定，动态档由风控智能体评分决定，取较高档 */
+  tier?: RiskTier;
+  /** 静态档与动态档的来源，便于控制台解释"为什么升到这一档" */
+  tierSource?: { amount: RiskTier; agent: RiskTier; final: RiskTier };
+  controls?: SecurityControl[];
+  risk?: RiskVerdict;
 }
 
 export interface OperationSummary {
@@ -434,6 +453,11 @@ export interface StepUpChallenge {
   /** 本机生物识别（WebAuthn）：可用 / 已通过 */
   bioAvailable?: boolean;
   bioVerified?: boolean;
+  /** T2 起要求手输收款人姓名；echo 校验通过后才允许进入多因子 */
+  payeeEchoRequired?: boolean;
+  /** 需要复述的收款人（脱敏展示，如"王*"） */
+  payeeMasked?: string;
+  payeeEchoVerified?: boolean;
 }
 
 export interface PendingAction {
@@ -446,6 +470,8 @@ export interface PendingAction {
   challenge?: StepUpChallenge;
   /** 黄色批量确认：同一计划内一起展示、一起授权的节点 */
   batchNodeIds?: string[];
+  /** T2 起要求手输收款人姓名；服务端只下发脱敏值，比对在服务端完成 */
+  payeeEcho?: { required: boolean; masked?: string };
 }
 
 export interface ContextStack {

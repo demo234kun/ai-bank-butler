@@ -105,6 +105,26 @@ export async function runDueTasks(nowIso: string = clock.nowIso()): Promise<Sche
       for (const item of state.schedules) {
         if (item.status !== 'scheduled' || !due(item.executeAt, nowMs)) continue;
 
+        // T4 人工审核单：到点仍未批准即超时退回，不发生资金变动
+        if (item.kind === 'review') {
+          item.status = 'cancelled';
+          item.lastError = 'REVIEW_TIMEOUT';
+          touched = true;
+          result.failures += 1;
+          pushNotification(state, {
+            kind: 'review',
+            title: '人工审核超时未处理',
+            body: `${item.title} 未在审核窗口内处理，交易已退回，未发生资金变动。`,
+            refId: item.id,
+            amountCents: item.amountCents,
+          });
+          audit.append('MANUAL_REVIEW_EXPIRED', `人工审核超时退回：${item.title}`, {
+            scheduleId: item.id,
+            amountCents: item.amountCents,
+          });
+          continue;
+        }
+
         if (item.kind !== 'transfer') {
           item.status = 'done';
           touched = true;

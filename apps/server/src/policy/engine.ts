@@ -1,17 +1,26 @@
 import {
   DAILY_TRANSFER_LIMIT_CENTS,
-  HARD_BLOCK_CENTS,
   HIGH_VALUE_CENTS,
   POLICY_REASON_TEXT,
+  TIER_META,
+  TIER_THRESHOLDS_CENTS,
+  controlsFor,
   formatMoney,
+  higherTier,
+  riskFromTier,
+  tierFromAmount,
   type DagNode,
   type PolicyDecision,
   type PolicyReason,
   type Risk,
+  type RiskTier,
 } from '@bank/shared';
 import { isLocked } from '../security/breaker';
 import type { BankState } from '../core/state';
 import { getLimitSummary } from './limits';
+import { assessRisk, type RiskCallContext } from './riskAgent';
+
+export type { RiskCallContext };
 
 const RISK_RANK: Record<Risk, number> = { GREEN: 0, YELLOW: 1, RED: 2 };
 
@@ -42,17 +51,52 @@ function amountOf(node: DagNode): number | undefined {
   }
 }
 
-function decisionFor(risk: Risk): PolicyDecision['decision'] {
-  return risk === 'GREEN' ? 'ALLOW' : risk === 'YELLOW' ? 'CONFIRM' : 'STEPUP';
+/** 取收款人与备注，供风控智能体判断收款人新异性与话术风险。 */
+function payeeAndNote(node: DagNode): { payeeName?: string; note?: string } {
+  const args = node.args as Record<string, any>;
+  const recipients = Array.isArray(args.recipients) ? args.recipients : [];
+  const payeeName =
+    (recipients[0]?.name as string | undefined) ??
+    (typeof args.payeeName === 'string' ? args.payeeName : undefined) ??
+    (typeof args.payee === 'string' ? args.payee : undefined);
+  const note = typeof args.note === 'string' ? args.note : undefined;
+  return { payeeName, note };
 }
 
-export function evaluateNode(state: BankState, node: DagNode): PolicyDecision {
+/** 操作类型决定的静态档位。 */
+function toolTier(node: DagNode, amountCents?: number): RiskTier {
+  if (node.risk === 'GREEN') return 'T0';
+  if (node.risk === 'RED') {
+    return amountCents ? higherTier('T3', tierFromAmount(amountCents)) : 'T3';
+  }
+  return amountCents ? tierFromAmount(amountCents) : 'T1';
+}
+
+function decisionForTier(tier: RiskTier, tool: DagNode['tool']): PolicyDecision['decision'] {
+  if (tier === 'T0') return 'ALLOW';
+  if (tier === 'T1' || tier === 'T2') return 'CONFIRM';
+  if (tier === 'T3') return 'STEPUP';
+  // 只有资金转出可以进人工审核队列；其余 T4 操作按 T3 强验证处理
+  return tool === 'transfer' ? 'REVIEW' : 'STEPUP';
+}
+
+function explanationFor(tier: RiskTier, signals: string[], amountCents?: number): string {
+  const meta = TIER_META[tier];
+  const tail = signals.length ? `风控智能体命中：${signals.slice(0, 3).join('、')}。` : '风控智能体未命中异常信号。';
+  const money = amountCents ? `本次金额 ${formatMoney(amountCents)}。` : '';
+  return `${meta.label}（${meta.name}）。${money}要求：${meta.strategy}。${tail}`;
+}
+
+export function evaluateNode(
+  state: BankState,
+  node: DagNode,
+  ctx: RiskCallContext = {},
+): PolicyDecision {
   const limit = getLimitSummary(state);
   const amountCents = amountOf(node);
   const baseRisk = node.risk;
   const reasons: PolicyReason[] = [];
   let risk = baseRisk;
-  let denied = false;
 
   if (isLocked(state)) {
     return {
@@ -65,6 +109,8 @@ export function evaluateNode(state: BankState, node: DagNode): PolicyDecision {
       limit,
       explanation: '当前会话处于安全锁定状态，所有操作暂停，需人工复核后解锁。',
       decision: 'DENY',
+      tier: 'T4',
+      controls: controlsFor('T4'),
     };
   }
 
@@ -78,10 +124,7 @@ export function evaluateNode(state: BankState, node: DagNode): PolicyDecision {
   switch (node.tool) {
     case 'transfer': {
       const amount = amountCents ?? 0;
-      if (amount > HARD_BLOCK_CENTS) {
-        reasons.push(reason('HARD_LIMIT', `金额 ${formatMoney(amount)} 超过演示硬限额 50000 元`));
-        denied = true;
-      } else if (amount <= limit.remainingCents) {
+      if (amount <= limit.remainingCents) {
         risk = 'YELLOW';
         reasons.push(
           reason(
@@ -100,7 +143,7 @@ export function evaluateNode(state: BankState, node: DagNode): PolicyDecision {
         );
         pushHighValue();
       }
-      if (risk !== 'GREEN') reasons.push(reason('REVERSIBLE_OP'));
+      reasons.push(reason('REVERSIBLE_OP'));
       break;
     }
     case 'schedule_transfer': {
@@ -177,21 +220,76 @@ export function evaluateNode(state: BankState, node: DagNode): PolicyDecision {
     }
   }
 
-  if (denied) {
+  // 风控智能体评分：只读账本与会话事实，模型不参与打分
+  const { payeeName, note } = payeeAndNote(node);
+  const verdict = assessRisk({
+    state,
+    node,
+    amountCents,
+    payeeName,
+    note,
+    usedCentsToday: limit.usedCents,
+    ...ctx,
+  });
+  const staticTier = toolTier(node, amountCents);
+  let tier = higherTier(staticTier, verdict.tier);
+  let effectiveRisk: Risk = higherRisk(risk, riskFromTier(tier));
+  tier = higherTier(tier, tierFromRisk(effectiveRisk));
+
+  for (const signal of verdict.signals.slice(0, 4)) {
+    reasons.push(reason(`RISK_${signal.code}`, signal.detail));
+  }
+  reasons.push(
+    reason(
+      'TIER_FUSED',
+      `静态档 ${staticTier} + 风控档 ${verdict.tier}（评分 ${verdict.score}）→ 执行档 ${tier}`,
+    ),
+  );
+
+  // 产品额度绝对上限：超出直接拒绝并提示走柜面提额，其余大额一律进入人工审核
+  const projectedDaily = limit.usedCents + (amountCents ?? 0);
+  if (amountCents && amountCents > TIER_THRESHOLDS_CENTS.singleCeiling) {
     return {
       nodeId: node.id,
       tool: node.tool,
       baseRisk,
       effectiveRisk: 'RED',
-      reasons,
+      reasons: [
+        reason('PRODUCT_CEILING', `单笔 ${formatMoney(amountCents)} 超过产品上限 ${formatMoney(TIER_THRESHOLDS_CENTS.singleCeiling)}`),
+        ...reasons,
+      ],
       amountCents,
       limit,
-      explanation: reasons.map((r) => r.detail ?? r.label).join('；'),
+      explanation: `单笔金额超过产品额度上限 ${formatMoney(TIER_THRESHOLDS_CENTS.singleCeiling)}，智能体不执行该交易，请通过柜面或提额流程办理。`,
       decision: 'DENY',
+      tier: 'T4',
+      controls: controlsFor('T4'),
+      risk: verdict,
+    };
+  }
+  if (amountCents && projectedDaily > TIER_THRESHOLDS_CENTS.dailyCeiling) {
+    return {
+      nodeId: node.id,
+      tool: node.tool,
+      baseRisk,
+      effectiveRisk: 'RED',
+      reasons: [
+        reason('DAILY_CEILING', `本次执行后当日累计 ${formatMoney(projectedDaily)} 超过 ${formatMoney(TIER_THRESHOLDS_CENTS.dailyCeiling)}`),
+        ...reasons,
+      ],
+      amountCents,
+      limit,
+      explanation: `当日累计将超过产品额度上限 ${formatMoney(TIER_THRESHOLDS_CENTS.dailyCeiling)}，本次交易被拒绝，可次日再发起或走柜面提额。`,
+      decision: 'DENY',
+      tier: 'T4',
+      controls: controlsFor('T4'),
+      risk: verdict,
     };
   }
 
-  const effectiveRisk = RISK_RANK[risk] < RISK_RANK[baseRisk] ? baseRisk : risk;
+  const controls = controlsFor(tier);
+  const decision = decisionForTier(tier, node.tool);
+  const signalTexts = verdict.signals.map((s) => s.detail);
 
   return {
     nodeId: node.id,
@@ -201,10 +299,21 @@ export function evaluateNode(state: BankState, node: DagNode): PolicyDecision {
     reasons,
     amountCents,
     limit,
-    explanation: reasons
-      .map((r) => r.detail ?? r.label)
-      .slice(0, 3)
-      .join('；'),
-    decision: decisionFor(effectiveRisk),
+    explanation: explanationFor(tier, signalTexts, amountCents),
+    decision,
+    tier,
+    tierSource: { amount: staticTier, agent: verdict.tier, final: tier },
+    controls,
+    risk: verdict,
   };
+}
+
+function higherRisk(a: Risk, b: Risk): Risk {
+  return RISK_RANK[a] >= RISK_RANK[b] ? a : b;
+}
+
+function tierFromRisk(risk: Risk): RiskTier {
+  if (risk === 'GREEN') return 'T0';
+  if (risk === 'YELLOW') return 'T1';
+  return 'T3';
 }

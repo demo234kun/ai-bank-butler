@@ -255,7 +255,7 @@ def p01(prs):
     para(tf, "可授权 · 可审计 · 可回退的银行级智能体", 15, MUTED, False, first=True, space_after=0, line=1.05)
 
     rows = [("六大场景", "转账 / 账单 / 理财 / 卡片 / 订阅 / 跨场景联动"),
-            ("三级权限", "日累计 1000 元分界，5 万元硬阻断"),
+            ("五档权限", "T0–T4，5 万元转人工审核，20 万元上限才拒绝"),
             ("四项安全", "防幻觉 · 防注入 · 哈希链审计 · 熔断沙箱"),
             ("真实执行", "计划任务到点扣款，语音与生物识别真实可用")]
     for i, (t, d) in enumerate(rows):
@@ -349,65 +349,77 @@ def p03(prs):
 
 def p04(prs):
     s = slide(prs)
-    header(s, "03 权限分级", "档位由服务端按账本判定", page_label="对标：核心技术要求 · 权限分级")
+    header(s, "03 权限分级", "五档执行级别，大额交易也能办", page_label="对标：核心技术要求 · 权限分级")
 
-    gf = s.shapes.add_table(4, 4, Inches(MX), Inches(CT + 0.12), Inches(8.5), Inches(2.9))
+    rows = [
+        ("T0", "绿色", "只读查询、账单分析、持仓、订阅扫描", "自动执行", GREEN),
+        ("T1", "黄色", "日累计 ≤1000 元转账、订阅取消、虚拟卡、冻结、预算锁定", "参数摘要确认", RGBColor(0x7A, 0x9B, 0x3B)),
+        ("T2", "黄色 · 强确认", "风控 ≥35，或首次收款人且 >500 元", "摘要 + 手输收款人姓名", YELLOW),
+        ("T3", "红色", "单笔 >1000 元、>5000 元双因子、理财申赎、挂失解挂、风控 ≥60", "摘要 + 复述 + 生物识别 / 短信", RED),
+        ("T4", "红色 · 延迟放行", "单笔 >5 万元、风控 ≥85、命中风险名单", "人工审核队列，10 分钟内可撤销", RGBColor(0x7A, 0x2C, 0x4E)),
+        ("拒绝", "—", "单笔 >20 万元或日累计 >50 万元", "拒绝并提示走柜面/提额", DIM),
+    ]
+    gf = s.shapes.add_table(len(rows) + 1, 4, Inches(MX), Inches(CT + 0.06), Inches(8.55), Inches(3.3))
     tbl = gf.table
     tbl.first_row = True
     tbl.horz_banding = False
-    for i, wd in enumerate([1.15, 2.35, 1.5, 3.5]):
+    for i, wd in enumerate([0.75, 1.5, 4.1, 2.2]):
         tbl.columns[i].width = Inches(wd)
-    for i, ht in enumerate([0.46, 0.82, 0.82, 0.82]):
-        tbl.rows[i].height = Inches(ht)
-    head = ["档位", "判定条件", "执行策略", "本系统实例"]
-    data = [("绿色", "查询类，不动钱", "确认意图后自动执行", "余额与账户查询、交易记录、账单分析、持仓与收益、订阅扫描", GREEN),
-            ("黄色", "小额资金 / 可逆配置", "用户确认，不二次强验", "日累计 ≤1000 元转账、取消订阅、虚拟卡申请、额度调整、卡片冻结、生日联动的预算与订购", YELLOW),
-            ("红色", "大额或不可逆", "多因子强验证后执行", "日累计 >1000 元、理财申购与赎回、卡片挂失解挂；单笔 >5000 元升级双因子", RED)]
-    for c, t in enumerate(head):
+    tbl.rows[0].height = Inches(0.34)
+    for r in range(1, len(rows) + 1):
+        tbl.rows[r].height = Inches(0.48)
+
+    for c, t in enumerate(["档位", "对应赛题", "触发条件", "执行要求"]):
         cell = tbl.cell(0, c)
         cell.fill.solid()
         cell.fill.fore_color.rgb = PANEL_2
-        cell.margin_left = cell.margin_right = Inches(0.12)
+        cell.margin_left = cell.margin_right = Inches(0.08)
         cell.vertical_anchor = MSO_ANCHOR.MIDDLE
         p = cell.text_frame.paragraphs[0]
         p.space_after = Pt(0)
-        r = p.add_run()
-        r.text = t
-        font(r, 12, MUTED, True)
-    for r_i, (lvl, cond, strat, ex, color) in enumerate(data, start=1):
-        for c, t in enumerate([lvl, cond, strat, ex]):
-            cell = tbl.cell(r_i, c)
+        run = p.add_run()
+        run.text = t
+        font(run, 11.5, MUTED, True)
+
+    for r, (tier, mapped, trigger, action, color) in enumerate(rows, start=1):
+        for c, t in enumerate([tier, mapped, trigger, action]):
+            cell = tbl.cell(r, c)
             cell.fill.solid()
-            cell.fill.fore_color.rgb = PANEL if r_i % 2 else RGBColor(0x11, 0x18, 0x2A)
-            cell.margin_left = cell.margin_right = Inches(0.12)
-            cell.margin_top = cell.margin_bottom = Inches(0.06)
+            cell.fill.fore_color.rgb = PANEL if r % 2 else RGBColor(0x11, 0x18, 0x2A)
+            cell.margin_left = cell.margin_right = Inches(0.08)
+            cell.margin_top = cell.margin_bottom = Inches(0.04)
             cell.vertical_anchor = MSO_ANCHOR.MIDDLE
             tf = cell.text_frame
             tf.word_wrap = True
             p = tf.paragraphs[0]
             p.space_after = Pt(0)
-            p.line_spacing = 1.14
+            p.line_spacing = 1.1
             run = p.add_run()
             run.text = t
             if c == 0:
-                font(run, 13.5, color, True)
+                font(run, 12.5, color, True)
+            elif c == 1:
+                font(run, 10.5, color if color != DIM else MUTED, True)
             else:
-                font(run, 10.8, TEXT if c < 3 else MUTED, c == 1)
+                font(run, 9.8, TEXT if c == 2 else MUTED, False)
 
-    tf = box(s, 9.32, CT + 0.16, 3.4, 2.9)
-    para(tf, "判定输入全部取自账本", 13.5, TEXT, True, first=True, space_after=10, line=1.15)
-    add_bullets(tf, ["金额", "当日已用额度", "操作类型", "会话风险状态"], size=12, gap=7, color=MUTED)
-    para(tf, "模型输出里写“这是小额”，档位不变。", 12, ACCENT, True, space_before=10, space_after=0, line=1.2)
+    tf = box(s, 9.32, CT + 0.12, 3.4, 1.9)
+    para(tf, "档位 = max(静态档, 风控档)", 12.5, TEXT, True, first=True, space_after=8, line=1.15)
+    add_bullets(tf, ["金额 + 操作类型 + 当日已用额度",
+                     "风控智能体 0–100 分，只能升档",
+                     "模型输出不参与判定"],
+                size=10.8, gap=6, color=MUTED)
+    para(tf, "十四类信号：金额占比、行为基线、收款人新异性、深夜、频次、拆分规避、会话风险、注入嫌疑、置信度、名单、诈骗话术、收款人改动、新设备、额度余量。",
+         9.8, MUTED, space_before=6, space_after=0, line=1.2)
 
-    band(s, MX, 5.02, CW, 1.5, [
-        ("硬阻断　", RED, "5 万元以上直接拒绝并留痕，任何授权都越不过；额度台账预约 / 提交两阶段，防止并发把日累计绕过去。", 12.5),
-        ("双因子　", TEXT, "单笔 >5000 元在强验证之上再要求第二因子；短信由服务端下发后再校验，客户端自行标记“已通过”在真实通道下无效。", 12),
-        ("差异声明　", DIM, "密码修改走原密码校验 + 服务端会话 + 其他设备全部下线，未纳入 Agent 的红色操作目录；U 盾未接入。", 11),
+    band(s, MX, 5.32, CW, 0.96, [
+        ("5 万元不再一刀切　", RED, "转人工审核并延迟到账，期内可撤销；审核通过后按 T3 执行，只有 20 万元产品上限才拒绝。", 11.5),
+        ("双因子与差异声明　", DIM, "单笔 >5000 元双因子；密码修改未纳入 Agent 红色目录，U 盾未接入。", 10.5),
     ], line_color=RED)
 
     footer(s)
-    notes(s, "2:40–3:40\n1000 元是黄色与红色的分界线：大额经强验证仍可执行，并继续占用当日累计。\n"
-             "被问差异时照实说：改密码没做成对话操作，U 盾没接。")
+    notes(s, "2:40–3:40 五档是本次改版的核心：T0 自动、T1 摘要确认、T2 要求手输收款人姓名、T3 多因子、T4 人工审核延迟放行。5 万元不再禁止，只有超过 20 万产品上限才拒绝。档位取静态档与风控档的较大值，风控只能升档。被问到凭什么信这个分数：十四类信号全部来自账本与会话事实，分数与命中项随策略判定写入审计链，可回放。")
+
 
 
 def p05(prs):
@@ -415,7 +427,7 @@ def p05(prs):
     header(s, "04 一次性授权", "确认单是哈希锁定的参数摘要", page_label="对标：多因子认证 + 操作确认")
 
     steps = [("摘要哈希绑定", "用户 + 会话 + run + 节点 + 全部参数"),
-             ("展示与确认", "收款人 / 金额 / 账户 / 备注 / 剩余额度"),
+             ("展示与确认", "含手输收款人姓名（T2 起）"),
              ("签发一次性授权", "90 秒过期，用后即废"),
              ("执行前重校验", "参数被改或风险升级 → 作废重验")]
     x = MX

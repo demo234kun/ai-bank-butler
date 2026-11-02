@@ -32,12 +32,16 @@ const SCHEMA = `{
     "subscriptionName": null,
     "birthdayDate": "MM-DD|null",
     "budget": null,
-    "query": "balance|transactions|null",
+    "query": "balance|transactions|schedules|cancel_schedule|null",
+    "txnAction": "detail|dispute|null",
+    "txnHint": null,
+    "disputeReason": "duplicate|unauthorized|not_received|amount_wrong|other|null",
+    "scheduleHint": null,
     "isScheduled": null,
     "scheduleDate": "YYYY-MM-DD|null",
     "splitNames": null,
     "splitTotal": null,
-    "wealthAction": "query|purchase|redeem|null"
+    "wealthAction": "query|purchase|redeem|holdings|null"
   },
   "needsClarification": false,
   "ambiguity": null,

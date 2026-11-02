@@ -7,7 +7,8 @@ import { evaluateNode } from '../policy/engine';
 import { issueGrant, operationDigest } from '../policy/grant';
 import { getChallenge, verifyStepUp } from '../policy/stepup';
 import { audit } from '../security/auditChain';
-import { clearSecurity, lockSecurity } from '../security/breaker';
+import { clearSecurity, lockSecurity, recordFailure } from '../security/breaker';
+import { verifyPayeeEcho } from '../policy/safeguards';
 import { preparePending } from './executor';
 import {
   appendMessage,
@@ -74,7 +75,7 @@ function cancelPending(session: SessionInternal, reason: string): void {
 
 export function confirmPending(
   session: SessionInternal,
-  input: { digest: string; approve: boolean; nodeId?: string },
+  input: { digest: string; approve: boolean; nodeId?: string; payeeEcho?: string },
 ): ControlResult {
   const pending = session.pending;
   if (!pending) return { ok: false, code: 'NO_PENDING', message: '当前没有待确认的操作' };
@@ -107,6 +108,35 @@ export function confirmPending(
   const bank = getState(session.userId);
   const dag = session.dag;
   if (!dag) return { ok: false, code: 'NO_DAG', message: '任务不存在' };
+
+  // T2 及以上要求手输收款人姓名：比对在服务端完成，3 次不一致触发熔断
+  if (pending.payeeEcho?.required) {
+    const echoNode = dag.nodes.find((n) => n.id === pending.nodeId);
+    if (echoNode && !verifyPayeeEcho(echoNode, input.payeeEcho)) {
+      const failure = recordFailure(bank, '收款人姓名复述不一致');
+      audit.append(
+        'PAYEE_ECHO_MISMATCH',
+        `收款人复述不一致：${pending.payeeEcho.masked ?? '—'}`,
+        { nodeId: pending.nodeId, failures: failure.failures, tripped: failure.tripped },
+        { sessionId: session.id, runId: dag.runId },
+      );
+      persist();
+      touch(session);
+      return {
+        ok: false,
+        code: 'PAYEE_ECHO_MISMATCH',
+        message: failure.tripped
+          ? '收款人姓名连续填错，会话已锁定，需人工复核解锁。'
+          : '收款人姓名与确认单不一致，请重新输入或取消本次操作。',
+      };
+    }
+    audit.append(
+      'PAYEE_ECHO_VERIFIED',
+      '收款人姓名复述通过',
+      { nodeId: pending.nodeId },
+      { sessionId: session.id, runId: dag.runId },
+    );
+  }
   const ids = pending.batchNodeIds?.length ? pending.batchNodeIds : [pending.nodeId];
   let needStepUp: StepUpChallenge | undefined;
   const grantedNodeIds: string[] = [];

@@ -30,6 +30,8 @@ export async function controlRoutes(app: FastifyInstance): Promise<void> {
       nodeId?: string;
       digest?: string;
       approve?: boolean;
+      /** T2 及以上：手输收款人姓名 */
+      payeeEcho?: string;
     };
     const session = requireSession(request, body.sessionId);
     if (!session) return reply.code(404).send({ ok: false, code: 'SESSION_NOT_FOUND', message: '会话不存在' });
@@ -38,6 +40,7 @@ export async function controlRoutes(app: FastifyInstance): Promise<void> {
       digest: String(body.digest),
       approve: Boolean(body.approve),
       nodeId: body.nodeId,
+      payeeEcho: typeof body.payeeEcho === 'string' ? body.payeeEcho : undefined,
     });
     return { ...result, snapshot: buildSnapshot(session) };
   });

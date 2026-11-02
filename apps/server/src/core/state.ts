@@ -72,6 +72,13 @@ export function availableCents(account: Account): number {
   return Math.max(0, account.balanceCents - account.lockedCents);
 }
 
+/** 名下非信用卡账户的可用资金合计（分）。 */
+export function totalAvailableCents(state: BankState): number {
+  return state.accounts
+    .filter((a) => a.type !== 'credit')
+    .reduce((sum, a) => sum + availableCents(a), 0);
+}
+
 export function primaryAccount(state: BankState): Account {
   return state.accounts.find((a) => a.primary) ?? state.accounts[0]!;
 }

@@ -73,14 +73,17 @@
 | 红色 | 用户确认 + 多因子 | 大额转账（当日累计 > 1000 元）、理财申购/赎回、挂失/解挂、调额 > 2000 元 | 人脸；单笔 > 5000 元加短信；挂失/解挂加短信 |
 | 拒绝 | 硬阻断 | 单笔 > 50000 元、熔断锁定、策略拒绝 | — |
 
-> 1000 元是黄色与红色的分界线，金额上限是 5 万元硬阻断。红色大额转账经强验证后允许执行，并继续占用当日累计额度。
+> 五档模型（T0–T4）见 `packages/shared/src/riskTiers.ts`。1000 元仍是黄红分界；5 万元以上不再一刀切禁止，而是进入 T4 人工审核队列（延迟到账、可撤销）；只有超过产品额度上限（单笔 20 万 / 日累计 50 万）才拒绝。
+>
+> 档位 = max(静态档, 风控智能体档)。风控智能体 `policy/riskAgent.ts` 只读账本与会话事实，输出 0–100 分、命中信号与建议档位，随 `POLICY_DECISION` 入链；T2 起要求手输收款人姓名（`PAYEE_ECHO`），T4 转人工审核（`MANUAL_REVIEW_QUEUED` / `_APPROVED` / `_REJECTED` / `_EXPIRED`）。
 
 ### 3.2 实现路径
 
 - 风险判定：`apps/server/src/policy/engine.ts`
   - 输入：工具、参数、当日已用/预留、熔断状态。
   - 输出：`baseRisk / effectiveRisk / decision / reasons / limit / explanation`。
-  - 理由码：`SMALL_TRANSFER`、`DAILY_LIMIT_EXCEEDED`、`HIGH_VALUE`、`RED_BASE`、`HARD_LIMIT`、`BREAKER_LOCKED`、`REVERSIBLE_OP` 等。
+  - 理由码：`SMALL_TRANSFER`、`DAILY_LIMIT_EXCEEDED`、`HIGH_VALUE`、`RED_BASE`、`TIER_FUSED`、`PRODUCT_CEILING`、`DAILY_CEILING`、`RISK_*`、`BREAKER_LOCKED`、`REVERSIBLE_OP` 等。
+  - 风控智能体：`policy/riskAgent.ts` 十四类信号加权，输出分数、档位与可解释命中项；只读账本，模型不参与打分。
 - 授权：`apps/server/src/policy/grant.ts`
   - `digest = sha256(userId|sessionId|runId|nodeId|tool|canonical(args))`。
   - 用户确认后签发；执行前校验节点、摘要、TTL、是否已用、当前风险是否高于授权风险。
@@ -245,6 +248,6 @@ node tools/qa-pure-product.mjs # 纯产品版 9 个页面，确认无演示标�
 
 ## 9. 结论
 
-产品化原型已经实现手机号注册/登录/访客、多用户数据与会话隔离、可安装 PWA、三级权限、强验证、注入防御、幻觉防护、审计、熔断、沙箱、DAG 与中断/回退/接管，并用单元测试、离线冒烟、真实 LLM 端到端、公网 HTTPS 与浏览器实测验证。
+产品化原型已经实现手机号注册/登录/访客、多用户数据与会话隔离、可安装 PWA、五档权限与风控智能体、复述确认、人工审核队列、强验证、注入防御、幻觉防护、审计、熔断、沙箱、DAG 与中断/回退/接管，并用单元测试、离线冒烟、真实 LLM 端到端、公网 HTTPS 与浏览器实测验证。
 
 它适合作为**比赛演示与产品验证**，不应直接用于真实资金场景。上线前必须补齐正式 IAM、真实 MFA、公网反滥用与 LLM 配额、生产沙箱、分布式状态、审计基础设施、数据加密、风控与合规评估。

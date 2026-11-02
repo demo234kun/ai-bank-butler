@@ -56,7 +56,7 @@ function init(): AgentState {
 export interface BankAgentApi {
   state: AgentState;
   send: (text: string) => Promise<void>;
-  confirm: (approve?: boolean) => Promise<void>;
+  confirm: (approve?: boolean, payeeEcho?: string) => Promise<void>;
   cancel: () => Promise<void>;
   stepUp: (input: { faceDone: boolean; smsCode?: string }) => Promise<void>;
   sendStepUpCode: () => Promise<{ ok: boolean; demoCode?: string; message?: string; cooldownSec?: number }>;
@@ -255,7 +255,7 @@ export function useBankAgent(options: BankAgentOptions = {}): BankAgentApi {
   }, [runStream]);
 
   const confirm = useCallback(
-    async (approve = true) => {
+    async (approve = true, payeeEcho?: string) => {
       const sid = sessionIdRef.current;
       const pending = state.pending;
       if (!sid || !pending) return;
@@ -265,6 +265,7 @@ export function useBankAgent(options: BankAgentOptions = {}): BankAgentApi {
           nodeId: pending.nodeId,
           digest: pending.digest,
           approve,
+          payeeEcho,
         });
         if (result.snapshot) dispatch({ type: 'snapshot', payload: result.snapshot });
         if (!result.ok) {
